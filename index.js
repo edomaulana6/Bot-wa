@@ -11,6 +11,14 @@ const fs = require('fs');
 
 // --- KONFIGURASI ---
 const phoneNumber = "628xxxxxxxxxx"; // GANTI NOMOR DISINI
+
+// DAFTAR ID GRUP YANG DIBLOKIR (Bot tidak akan merespon di sini)
+// Cara dapat ID: Lihat di console log saat ada pesan masuk di grup tersebut
+const blockedGroups = [
+    "120363000000000000@g.us", 
+    "628123456789-1600000000@g.us"
+];
+
 if (!fs.existsSync('./downloads')) fs.mkdirSync('./downloads');
 
 async function startBot() {
@@ -49,6 +57,12 @@ async function startBot() {
 
             const from = m.key.remoteJid;
             const isGroup = from.endsWith('@g.us');
+
+            // --- LOGIKA BLOKIR GRUP (OWNER ONLY) ---
+            if (isGroup && blockedGroups.includes(from)) {
+                return; // Bot langsung berhenti, tidak merespon apapun di grup ini
+            }
+
             const body = m.message.conversation || m.message.extendedTextMessage?.text || "";
             const participant = m.key.participant || m.key.remoteJid;
             const pushName = m.pushName || "User";
@@ -59,6 +73,12 @@ async function startBot() {
             let botNumber = conn.user.id.split(':')[0] + '@s.whatsapp.net';
             let isBotAdmin = isGroup ? participants.find(u => u.id === botNumber)?.admin : false;
             let isAdmin = isGroup ? participants.find(u => u.id === participant)?.admin : false;
+
+            // Log ID Grup ke console (untuk memudahkan Anda mencari ID grup yang mau diblokir)
+            if (isGroup && body.startsWith('.id')) {
+                console.log(`ID Grup ini: ${from}`);
+                return conn.sendMessage(from, { text: `ID Grup: ${from}` });
+            }
 
             // --- FITUR SECURITY (ANTI-LINK) ---
             if (isGroup && isBotAdmin && !isAdmin && (body.includes('http') || body.includes('chat.whatsapp.com'))) {
@@ -78,7 +98,7 @@ async function startBot() {
                     exec(`yt-dlp -f bestaudio --extract-audio --audio-format mp3 "${state.url}" -o "${audioFile}"`, async (err) => {
                         if (!err) {
                             await conn.sendMessage(from, { audio: { url: audioFile }, mimetype: 'audio/mp4' });
-                            fs.unlinkSync(audioFile);
+                            if (fs.existsSync(audioFile)) fs.unlinkSync(audioFile);
                         }
                     });
                     delete conn.userState[participant];
@@ -88,7 +108,7 @@ async function startBot() {
                     exec(`yt-dlp -f "best[height<=480]" "${state.url}" -o "${videoFile}"`, async (err) => {
                         if (!err) {
                             await conn.sendMessage(from, { video: { url: videoFile }, caption: state.title });
-                            fs.unlinkSync(videoFile);
+                            if (fs.existsSync(videoFile)) fs.unlinkSync(videoFile);
                         }
                     });
                     delete conn.userState[participant];
@@ -122,10 +142,10 @@ async function startBot() {
 │ 16. .afk [alasan]
 │ 17. .runtime (Durasi aktif)
 │ 18. .ping (Kecepatan respon)
+│ 19. .id (Cek ID Grup ini)
 │
 *➔ SECURITY*
-│ 19. Anti-Link (Otomatis)
-│ 20. Anti-Spam (Jeda 1 detik)
+│ 20. Anti-Link (Otomatis)
 │
 *╰────────────────────*`;
                 await conn.sendMessage(from, { text: menu });
@@ -177,3 +197,4 @@ async function startBot() {
 }
 
 startBot();
+                
