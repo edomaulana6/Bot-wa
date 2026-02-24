@@ -1,0 +1,15 @@
+{
+  "name": "wa-bot-pro-ubuntu",
+  "version": "1.0.0",
+  "description": "Bot WhatsApp Professional 20 Fitur",
+  "main": "index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.6.0",
+    "pino": "^8.19.0",
+    "qrcode-terminal": "^0.12.0"
+  }
+}
