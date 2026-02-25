@@ -1,14 +1,4 @@
-# Folder Sesi WhatsApp (SANGAT RAHASIA)
-auth_info/
+__pycache__/
+*.py[cod]
 session/
-creds.json
-
-# Folder Modul (SAMPAH DATA)
-node_modules/
-
-# File Log & Sampah Sistem
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.DS_Store
 .env
