@@ -1,15 +1,26 @@
 {
-  "name": "wa-bot-pro-ubuntu",
+  "name": "bot-wa-ubuntu-precision",
   "version": "1.0.0",
-  "description": "Bot WhatsApp Professional 20 Fitur",
+  "description": "WhatsApp Bot with Pairing Code and Downloader Features",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "watch": "pm2 start index.js --name bot-wa"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.6.0",
-    "pino": "^8.19.0",
+    "@whiskeysockets/baileys": "latest",
+    "pino": "^8.14.1",
+    "yt-search": "^2.10.4",
+    "ytdl-core-is": "latest",
+    "link-preview-js": "^3.0.0",
     "qrcode-terminal": "^0.12.0"
-  }
+  },
+  "keywords": [
+    "whatsapp",
+    "baileys",
+    "bot",
+    "ubuntu"
+  ],
+  "author": "Gemini AI",
+  "license": "ISC"
 }
