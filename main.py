@@ -1,94 +1,160 @@
-import os
-from neonize.client import NewClient
-from neonize.events import MessageEv, ConnectedEv, PairingCodeEv
-from yt_search import SearchVideos
+const {
+    default: makeWASocket,
+    useMultiFileAuthState,
+    DisconnectReason,
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore
+} = require("@whiskeysockets/baileys");
+const pino = require("pino");
+const { Boom } = require("@hapi/boom");
+const fs = require("fs");
+const axios = require("axios");
+const readline = require("readline");
 
-# Nomor HP untuk Pairing
-PHONE_NUMBER = "62xxxxxxxx"
+// Database Sederhana Permanen
+let db = { blacklist: [], antilink: false };
+if (fs.existsSync("./database.json")) db = JSON.parse(fs.readFileSync("./database.json"));
+const saveDB = () => fs.writeFileSync("./database.json", JSON.stringify(db, null, 2));
 
-def on_message(client: NewClient, message: MessageEv):
-    if message.Info.IsFromMe: return
-    
-    text = message.Message.conversation or message.Message.extendedTextMessage.text
-    from_jid = message.Info.RemoteJid
-    if not text or not text.startswith("."): return
+const question = (text) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise((resolve) => rl.question(text, (answer) => { rl.close(); resolve(answer); }));
+};
 
-    parts = text[1:].strip().split(" ", 1)
-    cmd = parts[0].lower()
-    args = parts[1] if len(parts) > 1 else ""
+async function startBot() {
+    const { state, saveCreds } = await useMultiFileAuthState("auth_info");
+    const { version } = await fetchLatestBaileysVersion();
 
-    # --- KATEGORI DOWNLOAD ---
-    if cmd == "v": # 1. Cari Video
-        client.send_message(from_jid, "🔍 Mencari...")
-        res = SearchVideos(args, offset=1, mode="json", max_results=1).result()["search_result"][0]
-        client.send_message(from_jid, f"Hasil: {res['title']}\nLink: {res['link']}")
-    elif cmd in ["getaud", "getvid"]: # 2-3. Download Media
-        client.send_message(from_jid, "⏳ Memproses media...")
+    const sock = makeWASocket({
+        version,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+        },
+        printQRInTerminal: false,
+        browser: ["Ubuntu", "Chrome", "120.0.0.0"],
+        logger: pino({ level: "fatal" }),
+    });
 
-    # --- KATEGORI GRUP (Pastikan Bot Admin) ---
-    elif cmd == "kick": # 4. Kick Member
-        client.group_participants_update(from_jid, [message.Info.Sender], "remove")
-    elif cmd == "add": # 5. Add Member
-        client.group_participants_update(from_jid, [f"{args}@s.whatsapp.net"], "add")
-    elif cmd == "promote": # 6. Jadikan Admin
-        client.group_participants_update(from_jid, [message.Info.Sender], "promote")
-    elif cmd == "demote": # 7. Turunkan Admin
-        client.group_participants_update(from_jid, [message.Info.Sender], "demote")
-    elif cmd == "tagall": # 8. Tag Semua
-        client.send_message(from_jid, "📢 Memanggil semua member...")
-    elif cmd == "hidetag": # 9. Tag Sembunyi
-        client.send_message(from_jid, f"Info: {args}")
-    elif cmd == "linkgc": # 10. Link Grup
-        client.send_message(from_jid, "Tautan grup sedang diambil...")
-    elif cmd == "infogc": # 11. Info Grup
-        client.send_message(from_jid, "Menampilkan statistik grup.")
-    elif cmd == "setname": # 12. Ganti Nama Grup
-        client.group_update_subject(from_jid, args)
-    elif cmd == "setdesc": # 13. Ganti Deskripsi
-        client.group_update_description(from_jid, args)
-    elif cmd == "group": # 14. Buka/Tutup Grup
-        client.send_message(from_jid, "Setelan grup diubah.")
-    elif cmd == "revoke": # 15. Reset Link Grup
-        client.send_message(from_jid, "Link grup telah direset.")
+    if (!sock.authState.creds.registered) {
+        const phoneNumber = await question("Masukkan Nomor WA (628xxx): ");
+        const code = await sock.requestPairingCode(phoneNumber.trim());
+        console.log(`\nKODE PAIRING ANDA: ${code}\n`);
+    }
 
-    # --- KATEGORI UTILITAS & OWNER ---
-    elif cmd == "ping": # 16. Cek Respon
-        client.send_message(from_jid, "Pong! Bot Aktif.")
-    elif cmd == "runtime": # 17. Waktu Aktif
-        client.send_message(from_jid, "Bot sudah berjalan selama 2 jam.")
-    elif cmd == "owner": # 18. Kontak Owner
-        client.send_message(from_jid, "Kontak Owner: wa.me/6283894587604")
-    elif cmd == "me": # 19. Cek Profil
-        client.send_message(from_jid, f"Halo @{message.Info.Sender.split('@')[0]}")
-    elif cmd == "delete": # 20. Hapus Pesan Bot
-        client.send_message(from_jid, "Pesan dihapus.")
-    elif cmd == "getpp": # 21. Ambil Foto Profil
-        client.send_message(from_jid, "Mengambil foto profil...")
-    elif cmd == "block": # 22. Blokir User
-        client.send_message(from_jid, "User telah diblokir.")
-    elif cmd == "unblock": # 23. Buka Blokir
-        client.send_message(from_jid, "Blokir dibuka.")
-    elif cmd == "listpc": # 24. Daftar Chat Pribadi
-        client.send_message(from_jid, "Menampilkan daftar chat.")
-    elif cmd == "menu": # 25. Daftar Fitur
-        menu = "*DAFTAR 25 FITUR BOT*\n\n" \
-               "1. .v  2. .getaud  3. .getvid\n" \
-               "4. .kick  5. .add  6. .promote\n" \
-               "7. .demote  8. .tagall  9. .hidetag\n" \
-               "10. .linkgc 11. .infogc 12. .setname\n" \
-               "13. .setdesc 14. .group 15. .revoke\n" \
-               "16. .ping 17. .runtime 18. .owner\n" \
-               "19. .me 20. .delete 21. .getpp\n" \
-               "22. .block 23. .unblock 24. .listpc\n" \
-               "25. .menu"
-        client.send_message(from_jid, menu)
+    sock.ev.on("creds.update", saveCreds);
 
-# --- SETUP CLIENT ---
-client = NewClient("session/bot.db")
-client.event_handler.register(PairingCodeEv, lambda c, code: print(f"KODE PAIRING: {code}"))
-client.event_handler.register(MessageEv, on_message)
+    sock.ev.on("messages.upsert", async (chatUpdate) => {
+        try {
+            const m = chatUpdate.messages[0];
+            if (!m.message || m.key.fromMe) return;
 
-if not client.is_connected():
-    client.request_pairing_code(PHONE_NUMBER)
-client.connect()
-    
+            const from = m.key.remoteJid;
+            const isGroup = from.endsWith('@g.us');
+            const body = (m.message.conversation || m.message.extendedTextMessage?.text || m.message.imageMessage?.caption || "");
+
+            if (db.blacklist.includes(from)) return;
+
+            // ANTI-LINK KETAT
+            if (isGroup && db.antilink && body.includes('chat.whatsapp.com/')) {
+                const groupMetadata = await sock.groupMetadata(from);
+                const isAdmin = groupMetadata.participants.find(p => p.id === m.key.participant)?.admin;
+                if (!isAdmin) {
+                    await sock.groupParticipantsUpdate(from, [m.key.participant], "remove");
+                    return;
+                }
+            }
+
+            const prefix = '.';
+            const isCmd = body.startsWith(prefix);
+            const command = isCmd ? body.slice(prefix.length).trim().split(' ')[0].toLowerCase() : '';
+            const q = body.slice(prefix.length + command.length).trim();
+
+            if (isCmd) {
+                switch (command) {
+                    case 'menu':
+                        let menu = `*--- ALL-PLATFORM DOWNLOADER ---*\n\n` +
+                                   `*📥 DOWNLOADER*\n` +
+                                   `• .tiktok [url]\n• .ig [url]\n• .fb [url]\n• .twit [url]\n` +
+                                   `• .ytmp4 [url]\n• .ytmp3 [url]\n\n` +
+                                   `*🛡️ GROUP KETAT*\n` +
+                                   `• .antilink on/off\n• .tagall / .kick @tag\n\n` +
+                                   `*🚫 BLACKLIST*\n• .addbl / .delbl / .listbl`;
+                        await sock.sendMessage(from, { text: menu }, { quoted: m });
+                        break;
+
+                    case 'tiktok':
+                    case 'tt':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/tiktok?url=${q}`);
+                            await sock.sendMessage(from, { video: { url: res.data.result.video[0] }, caption: "Sukses TikTok" }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal TikTok." }); }
+                        break;
+
+                    case 'ig':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/igdownload?url=${q}`);
+                            await sock.sendMessage(from, { video: { url: res.data.result[0].url } }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal Instagram." }); }
+                        break;
+
+                    case 'fb':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/fbdown?url=${q}`);
+                            await sock.sendMessage(from, { video: { url: res.data.result.normal } }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal Facebook." }); }
+                        break;
+
+                    case 'twit':
+                    case 'twitter':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/twitter?url=${q}`);
+                            await sock.sendMessage(from, { video: { url: res.data.result.video } }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal Twitter/X." }); }
+                        break;
+
+                    case 'ytmp4':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/ytmp4?url=${q}`);
+                            await sock.sendMessage(from, { video: { url: res.data.result.download }, caption: res.data.result.title }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal YouTube Video." }); }
+                        break;
+
+                    case 'ytmp3':
+                        if (!q) return;
+                        try {
+                            const res = await axios.get(`https://api.vreden.web.id/api/ytmp3?url=${q}`);
+                            await sock.sendMessage(from, { audio: { url: res.data.result.download }, mimetype: 'audio/mp4' }, { quoted: m });
+                        } catch { await sock.sendMessage(from, { text: "Gagal YouTube Audio." }); }
+                        break;
+
+                    case 'antilink':
+                        if (!isGroup) return;
+                        db.antilink = q === 'on';
+                        saveDB();
+                        await sock.sendMessage(from, { text: `Anti-Link: ${db.antilink ? 'AKTIF' : 'MATI'}` });
+                        break;
+
+                    case 'addbl':
+                        if (!db.blacklist.includes(from)) { db.blacklist.push(from); saveDB(); }
+                        await sock.sendMessage(from, { text: "ID Terblokir." });
+                        break;
+
+                    case 'tagall':
+                        if (!isGroup) return;
+                        const meta = await sock.groupMetadata(from);
+                        sock.sendMessage(from, { text: q || 'Panggilan', mentions: meta.participants.map(a => a.id) });
+                        break;
+                }
+            }
+        } catch (e) { console.error(e); }
+    });
+
+    sock.ev.on("connection.update", (u) => { if (u.connection === "close") startBot(); });
+}
+startBot();
