@@ -1,3 +1,0 @@
-neonize
-yt-search-python
-pytube
