@@ -30,7 +30,8 @@ async function startBot() {
         },
         printQRInTerminal: false,
         // Identitas agar notifikasi pairing muncul otomatis
-        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        browser: ["Mac OS", "Chrome", "121.0.6167.184"]
+
     });
 
     // 2. SISTEM AUTO-PAIRING KE NOMOR CONFIG
