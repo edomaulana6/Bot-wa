@@ -26,7 +26,7 @@ async function startBot() {
         },
         printQRInTerminal: false,
         // Ini kunci agar notifikasi pairing muncul di HP (Menyamar sebagai Chrome)
-        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        browser: ["Chrome (Linux)", "Chrome", "121.0.6167.184"]
     });
 
     // SISTEM AUTO-DETEKSI NOMOR (MEMANCING NOTIFIKASI WA)
