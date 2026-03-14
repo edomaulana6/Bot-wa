@@ -1,4 +1,13 @@
-node_modules
+# Folder sesi WA (Wajib di-ignore agar tidak bocor/tabrakan IP)
 session_serika
+
+# File cache NPM
 .npm
-package-lock.json
+
+# File log sampah
+*.log
+nohup.out
+
+# Jika kamu memutuskan untuk upload node_modules dari Termux ke VPS, 
+# maka baris "node_modules" di bawah ini HARUS DIHAPUS atau diberi tanda pagar (#).
+# node_modules
