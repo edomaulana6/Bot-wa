@@ -3,6 +3,7 @@ global.crypto = require('crypto'); // Tambahkan baris ini!
 const { 
     default: makeWASocket, 
     // ... sisa kode lainnya tetap sama
+
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
