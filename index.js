@@ -1,5 +1,9 @@
 global.crypto = require('crypto'); 
 
+// --- CONFIG ---
+const BOT_NUMBER = "6283894587604"; // Masukkan nomor WA kamu di sini (Tanpa + atau spasi)
+const OWNER = BOT_NUMBER + "@s.whatsapp.net";
+
 const { 
     default: makeWASocket, 
     useMultiFileAuthState, 
@@ -13,7 +17,7 @@ const fs = require("fs");
 const path = require("path");
 
 async function startBot() {
-    // Membaca sesi dari folder session_serika
+    // 1. Hapus folder session_serika di Github dulu agar ini jalan!
     const { state, saveCreds } = await useMultiFileAuthState('session_serika');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -25,30 +29,25 @@ async function startBot() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
         printQRInTerminal: false,
-        // Ini kunci agar notifikasi pairing muncul di HP (Menyamar sebagai Chrome)
-        browser: ["Chrome (Linux)", "Chrome", "121.0.6167.184"]
+        // Identitas agar notifikasi pairing muncul otomatis
+        browser: ["Ubuntu", "Chrome", "20.0.04"]
     });
 
-    // SISTEM AUTO-DETEKSI NOMOR (MEMANCING NOTIFIKASI WA)
+    // 2. SISTEM AUTO-PAIRING KE NOMOR CONFIG
     if (!sock.authState.creds.registered) {
-        // GANTI DENGAN NOMOR WA KAMU DI SINI
-        let phoneNumber = "62‎83894587604‎"; 
-
-        if (phoneNumber) {
-            phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Membersihkan karakter non-angka
-            
-            console.log(`⏳ Menghubungkan ke WA: ${phoneNumber}...`);
-            await delay(10000); // Jeda 10 detik agar server siap mengirim notif
-            
-            try {
-                const code = await sock.requestPairingCode(phoneNumber);
-                console.log(`\n======================================`);
-                console.log(`✅ KODE PAIRING KAMU: ${code}`);
-                console.log(`======================================\n`);
-                console.log(`Cek notifikasi di HP kamu sekarang, Do!`);
-            } catch (err) {
-                console.error("❌ Gagal mengirim pairing. Pastikan nomor benar atau tunggu sebentar.");
-            }
+        let phoneNumber = BOT_NUMBER.replace(/[^0-9]/g, '');
+        
+        console.log(`⏳ Memancing notifikasi pairing ke: ${phoneNumber}...`);
+        await delay(10000); // Tunggu server siap
+        
+        try {
+            const code = await sock.requestPairingCode(phoneNumber);
+            console.log(`\n======================================`);
+            console.log(`✅ KODE PAIRING KAMU: ${code}`);
+            console.log(`======================================\n`);
+            console.log(`Cek notifikasi di HP kamu, Do!`);
+        } catch (err) {
+            console.error("❌ Gagal mengirim pairing. Coba hapus folder session_serika dan push lagi.");
         }
     }
 
@@ -57,16 +56,12 @@ async function startBot() {
     sock.ev.on('connection.update', (u) => {
         const { connection, lastDisconnect } = u;
         if (connection === 'open') {
-            console.log("\n✅ SERIKA AI ONLINE! Sudah terhubung dengan WA kamu.");
+            console.log("\n✅ SERIKA AI ONLINE!");
+            sock.sendMessage(OWNER, { text: "Bot berhasil terhubung! 🎉" });
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                console.log("🔄 Koneksi putus, mencoba menyambung ulang...");
-                startBot();
-            } else {
-                console.log("🚫 Sesi keluar. Hapus folder session_serika untuk pairing ulang.");
-            }
+            if (shouldReconnect) startBot();
         }
     });
 
@@ -76,39 +71,29 @@ async function startBot() {
             if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
 
             const from = msg.key.remoteJid;
-            const body = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
+            const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
             
             if (!body.startsWith("!")) return;
 
             const command = body.slice(1).trim().split(/ +/)[0].toLowerCase();
             const args = body.trim().split(/ +/).slice(1);
-            const pushname = msg.pushName || "User";
 
             // LOAD SISTEM PLUGINS
             const pluginFolder = path.resolve(__dirname, 'plugins');
-            if (!fs.existsSync(pluginFolder)) fs.mkdirSync(pluginFolder);
-
-            const pluginFiles = fs.readdirSync(pluginFolder).filter(file => file.endsWith('.js'));
-
-            for (const file of pluginFiles) {
-                try {
-                    const pluginPath = path.resolve(pluginFolder, file);
-                    delete require.cache[require.resolve(pluginPath)];
-                    const plugin = require(pluginPath);
-                    
-                    if (plugin.command.includes(command)) {
-                        await sock.readMessages([msg.key]);
-                        await plugin.operate(sock, msg, from, args, { pushname, body });
+            if (fs.existsSync(pluginFolder)) {
+                const pluginFiles = fs.readdirSync(pluginFolder).filter(file => file.endsWith('.js'));
+                for (const file of pluginFiles) {
+                    const plugin = require(path.resolve(pluginFolder, file));
+                    if (plugin.command && plugin.command.includes(command)) {
+                        await plugin.operate(sock, msg, from, args, { body });
                     }
-                } catch (e) {
-                    console.error(`❌ Error plugin ${file}:`, e.message);
                 }
             }
         } catch (err) {
-            console.error("❌ Sistem Error:", err.message);
+            console.error("Error:", err.message);
         }
     });
 }
 
-startBot().catch(err => console.error("Gagal menjalankan bot:", err));
-            
+startBot().catch(err => console.error(err));
+                
