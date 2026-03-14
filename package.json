@@ -1,22 +1,15 @@
 {
-  "name": "bot-wa-all-platform",
-  "version": "1.1.0",
-  "description": "Bot WhatsApp All-Platform Downloader & Group Moderator",
+  "name": "serika-ai",
+  "version": "1.0.0",
+  "description": "WhatsApp Bot SerikaAi 25 Features",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "latest",
-    "@hapi/boom": "^10.0.1",
-    "pino": "^8.19.0",
-    "axios": "^1.6.7",
-    "readline": "^1.3.0",
-    "form-data": "^4.0.0",
-    "file-type": "^16.5.4"
-  },
-  "engines": {
-    "node": ">=14.0.0"
-  },
-  "license": "ISC"
+    "@whiskeysockets/baileys": "^6.6.0",
+    "axios": "^1.6.0",
+    "pino": "^8.16.0",
+    "qrcode-terminal": "^0.12.0"
+  }
 }
