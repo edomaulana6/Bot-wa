@@ -25,7 +25,8 @@ async function startBot() {
         },
         printQRInTerminal: false,
         // Browser identitas agar lebih stabil di server
-        browser: ["SerikaAi", "Ubuntu", "20.04"]
+        browser: ["Ubuntu", "Chrome", "20.0.04"]
+        
     });
 
     // Pairing via Environment Variable (Koyeb Dashboard)
