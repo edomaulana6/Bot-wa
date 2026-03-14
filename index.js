@@ -13,7 +13,7 @@ const fs = require("fs");
 const path = require("path");
 
 async function startBot() {
-    // Pastikan folder session dibersihkan jika ingin pairing ulang
+    // Membaca sesi dari folder session_serika
     const { state, saveCreds } = await useMultiFileAuthState('session_serika');
     const { version } = await fetchLatestBaileysVersion();
 
@@ -25,29 +25,30 @@ async function startBot() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
         printQRInTerminal: false,
-        // Gunakan identitas browser yang paling stabil untuk pairing
+        // Ini kunci agar notifikasi pairing muncul di HP (Menyamar sebagai Chrome)
         browser: ["Ubuntu", "Chrome", "20.0.04"]
     });
 
-    // SISTEM PAIRING CODE
+    // SISTEM AUTO-DETEKSI NOMOR (MEMANCING NOTIFIKASI WA)
     if (!sock.authState.creds.registered) {
-        let phoneNumber = process.env.BOT_NUMBER;
+        // GANTI DENGAN NOMOR WA KAMU DI SINI
+        let phoneNumber = "62‎83894587604‎"; 
+
         if (phoneNumber) {
-            phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Bersihkan nomor
-            console.log(`\n⏳ Menyiapkan pairing untuk nomor: ${phoneNumber}`);
-            await delay(15000); // Jeda agar server Baileys siap
+            phoneNumber = phoneNumber.replace(/[^0-9]/g, ''); // Membersihkan karakter non-angka
+            
+            console.log(`⏳ Menghubungkan ke WA: ${phoneNumber}...`);
+            await delay(10000); // Jeda 10 detik agar server siap mengirim notif
             
             try {
                 const code = await sock.requestPairingCode(phoneNumber);
                 console.log(`\n======================================`);
-                console.log(`✅ KODE PAIRING ANDA: ${code}`);
+                console.log(`✅ KODE PAIRING KAMU: ${code}`);
                 console.log(`======================================\n`);
-                console.log(`Silakan masukkan kode di atas pada WhatsApp Anda.`);
+                console.log(`Cek notifikasi di HP kamu sekarang, Do!`);
             } catch (err) {
-                console.error("❌ Gagal mendapatkan kode pairing. Pastikan nomor benar.");
+                console.error("❌ Gagal mengirim pairing. Pastikan nomor benar atau tunggu sebentar.");
             }
-        } else {
-            console.log("❌ ERROR: BOT_NUMBER belum diisi di dashboard Koyeb!");
         }
     }
 
@@ -56,15 +57,15 @@ async function startBot() {
     sock.ev.on('connection.update', (u) => {
         const { connection, lastDisconnect } = u;
         if (connection === 'open') {
-            console.log("\n✅ SERIKA AI BERHASIL TERHUBUNG!");
+            console.log("\n✅ SERIKA AI ONLINE! Sudah terhubung dengan WA kamu.");
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
-                console.log("🔄 Koneksi terputus, mencoba menyambung ulang...");
+                console.log("🔄 Koneksi putus, mencoba menyambung ulang...");
                 startBot();
             } else {
-                console.log("🚫 Sesi keluar. Hapus folder session_serika di GitHub untuk pairing ulang.");
+                console.log("🚫 Sesi keluar. Hapus folder session_serika untuk pairing ulang.");
             }
         }
     });
@@ -77,7 +78,6 @@ async function startBot() {
             const from = msg.key.remoteJid;
             const body = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.videoMessage?.caption || "";
             
-            // Bot hanya merespon pesan yang diawali tanda seru (!)
             if (!body.startsWith("!")) return;
 
             const command = body.slice(1).trim().split(/ +/)[0].toLowerCase();
@@ -93,16 +93,15 @@ async function startBot() {
             for (const file of pluginFiles) {
                 try {
                     const pluginPath = path.resolve(pluginFolder, file);
-                    // Menghapus cache agar setiap perubahan plugin langsung terasa
                     delete require.cache[require.resolve(pluginPath)];
                     const plugin = require(pluginPath);
                     
                     if (plugin.command.includes(command)) {
-                        await sock.readMessages([msg.key]); // Auto Read
+                        await sock.readMessages([msg.key]);
                         await plugin.operate(sock, msg, from, args, { pushname, body });
                     }
                 } catch (e) {
-                    console.error(`❌ Error pada plugin ${file}:`, e.message);
+                    console.error(`❌ Error plugin ${file}:`, e.message);
                 }
             }
         } catch (err) {
@@ -111,6 +110,5 @@ async function startBot() {
     });
 }
 
-// Mulai Bot
 startBot().catch(err => console.error("Gagal menjalankan bot:", err));
             
