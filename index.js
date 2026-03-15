@@ -1,107 +1,150 @@
-global.crypto = require('crypto'); 
-
-// --- CONFIG ---
-const BOT_NUMBER = "6283894587604"; 
-const OWNER = BOT_NUMBER + "@s.whatsapp.net";
-
-const { 
-    default: makeWASocket, 
+import express from "express";
+import { createServer as createViteServer } from "vite";
+import path from "path";
+import fs from "fs";
+import cors from "cors";
+import pino from "pino";
+import makeWASocket, { 
     useMultiFileAuthState, 
-    delay, 
-    makeCacheableSignalKeyStore,
-    DisconnectReason,
-    fetchLatestBaileysVersion
-} = require("@whiskeysockets/baileys");
-const pino = require("pino");
-const fs = require("fs");
-const path = require("path");
+    DisconnectReason, 
+    fetchLatestBaileysVersion,
+    makeCacheableSignalKeyStore
+} from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
 
-async function startBot() {
-    // Menghapus folder lama agar sesi benar-benar segar
-    const sessionPath = './session_serika';
-    
-    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
-    const { version } = await fetchLatestBaileysVersion();
+async function startServer() {
+    const app = express();
+    const PORT = 3000;
 
-    const sock = makeWASocket({
-        version,
-        logger: pino({ level: 'silent' }),
-        auth: {
-            creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
-        },
-        printQRInTerminal: false,
-        // Update identitas browser terbaru agar notifikasi muncul
-        browser: ["Mac OS", "Chrome", "121.0.6167.184"]
-        
-    });
-
-    // SISTEM PAIRING
-    if (!sock.authState.creds.registered) {
-        let phoneNumber = BOT_NUMBER.replace(/[^0-9]/g, '');
-        
-        console.log(`\n[!] Menunggu koneksi server untuk nomor: ${phoneNumber}...`);
-        
-        // Jeda 6 detik sangat krusial agar server siap menerima request pairing
-        setTimeout(async () => {
-            try {
-                const code = await sock.requestPairingCode(phoneNumber);
-                console.log(`\n======================================`);
-                console.log(`✅ KODE PAIRING ANDA: ${code}`);
-                console.log(`======================================\n`);
-                console.log(`Jika notifikasi tidak muncul otomatis:`);
-                console.log(`1. Buka WA > Perangkat Tertaut`);
-                console.log(`2. Klik Tautkan Perangkat`);
-                console.log(`3. Pilih 'Tautkan dengan nomor telepon saja' di bagian bawah.`);
-                console.log(`4. Masukkan kode: ${code}`);
-            } catch (err) {
-                console.error("❌ Gagal mendapatkan kode. Pastikan koneksi internet stabil.");
-            }
-        }, 6000); 
+    // Pastikan folder sessions ada
+    const sessionsDir = path.join(process.cwd(), 'sessions');
+    if (!fs.existsSync(sessionsDir)) {
+        fs.mkdirSync(sessionsDir, { recursive: true });
     }
 
-    sock.ev.on('creds.update', saveCreds);
+    app.use(cors());
+    app.use(express.json());
 
-    sock.ev.on('connection.update', (u) => {
-        const { connection, lastDisconnect } = u;
-        if (connection === 'open') {
-            console.log("\n✅ BERHASIL TERHUBUNG!");
-            sock.sendMessage(OWNER, { text: "Serika AI sudah aktif, Do! 🎉" });
+    const logger = pino({ level: 'silent' });
+    const activeSockets = new Map();
+
+    // ENDPOINT UNTUK MENDAPATKAN KODE PAIRING (LOGIKA UTAMA KAMU)
+    app.post("/api/get-pairing-code", async (req, res) => {
+        const { phoneNumber } = req.body;
+
+        if (!phoneNumber) {
+            return res.status(400).json({ error: "Nomor telepon wajib diisi!" });
         }
-        if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) startBot();
+
+        const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
+        const sessionPath = path.join(sessionsDir, `session_${cleanNumber}`);
+
+        // Bersihkan socket lama jika ada untuk nomor yang sama
+        if (activeSockets.has(cleanNumber)) {
+            try {
+                const oldSock = activeSockets.get(cleanNumber);
+                oldSock.end(undefined);
+            } catch (e) {
+                console.error("Gagal menutup socket lama:", e);
+            }
+            activeSockets.delete(cleanNumber);
+        }
+
+        try {
+            // Gunakan folder sesi spesifik per nomor
+            const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+            const { version } = await fetchLatestBaileysVersion();
+
+            const sock = makeWASocket({
+                version,
+                logger,
+                printQRInTerminal: false,
+                auth: {
+                    creds: state.creds,
+                    keys: makeCacheableSignalKeyStore(state.keys, logger),
+                },
+                // Identitas browser agar notifikasi pairing muncul (Update terbaru)
+                browser: ["Ubuntu", "Chrome", "110.0.5481.178"],
+                connectTimeoutMs: 60000,
+            });
+
+            activeSockets.set(cleanNumber, sock);
+
+            sock.ev.on('creds.update', saveCreds);
+
+            sock.ev.on('connection.update', async (update) => {
+                const { connection, lastDisconnect } = update;
+                
+                if (connection === 'close') {
+                    const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+                    const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                    
+                    console.log(`[${cleanNumber}] Koneksi terputus:`, statusCode);
+                    
+                    if (!shouldReconnect) {
+                        activeSockets.delete(cleanNumber);
+                        if (fs.existsSync(sessionPath)) {
+                            fs.rmSync(sessionPath, { recursive: true, force: true });
+                        }
+                    }
+                } else if (connection === 'open') {
+                    console.log(`[${cleanNumber}] Bot berhasil terhubung!`);
+                    // Opsional: Kirim pesan ke nomor bot sendiri saat berhasil login
+                    await sock.sendMessage(`${cleanNumber}@s.whatsapp.net`, { text: "Serika AI Pairing Hub Berhasil Terhubung! 🎉" });
+                }
+            });
+
+            // LOGIKA MEMANCING KODE PAIRING
+            if (!sock.authState.creds.registered) {
+                setTimeout(async () => {
+                    try {
+                        if (activeSockets.has(cleanNumber)) {
+                            const code = await sock.requestPairingCode(cleanNumber);
+                            console.log(`[${cleanNumber}] Generated Pairing Code: ${code}`);
+                            if (!res.headersSent) {
+                                res.json({ code });
+                            }
+                        }
+                    } catch (err) {
+                        console.error(`[${cleanNumber}] Gagal minta kode pairing:`, err);
+                        if (!res.headersSent) {
+                            res.status(500).json({ error: "Gagal meminta kode pairing. Coba lagi." });
+                        }
+                    }
+                }, 6000); // Jeda 6 detik agar socket stabil
+            } else {
+                if (!res.headersSent) {
+                    res.status(400).json({ error: "Nomor ini sudah terdaftar/login." });
+                }
+            }
+
+        } catch (error) {
+            console.error("Server error:", error);
+            if (!res.headersSent) {
+                res.status(500).json({ error: "Terjadi kesalahan pada server." });
+            }
         }
     });
 
-    sock.ev.on('messages.upsert', async m => {
-        try {
-            const msg = m.messages[0];
-            if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
+    // --- SISANYA ADALAH KONFIGURASI VITE (SAMA SEPERTI KODE KAMU) ---
+    if (process.env.NODE_ENV !== "production") {
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: "spa",
+        });
+        app.use(vite.middlewares);
+    } else {
+        const distPath = path.join(process.cwd(), 'dist');
+        app.use(express.static(distPath));
+        app.get('*', (req, res) => {
+            res.sendFile(path.join(distPath, 'index.html'));
+        });
+    }
 
-            const from = msg.key.remoteJid;
-            const body = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-            
-            if (!body.startsWith("!")) return;
-
-            const command = body.slice(1).trim().split(/ +/)[0].toLowerCase();
-            const args = body.trim().split(/ +/).slice(1);
-
-            const pluginFolder = path.resolve(__dirname, 'plugins');
-            if (fs.existsSync(pluginFolder)) {
-                const pluginFiles = fs.readdirSync(pluginFolder).filter(file => file.endsWith('.js'));
-                for (const file of pluginFiles) {
-                    const plugin = require(path.resolve(pluginFolder, file));
-                    if (plugin.command && plugin.command.includes(command)) {
-                        await plugin.operate(sock, msg, from, args, { body });
-                    }
-                }
-            }
-        } catch (err) {
-            console.error("Error:", err.message);
-        }
+    app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server jalan di http://localhost:${PORT}`);
     });
 }
 
-startBot().catch(err => console.error(err));
-            
+startServer();
+        
