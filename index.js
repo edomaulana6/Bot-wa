@@ -10,7 +10,6 @@ import makeWASocket, {
     fetchLatestBaileysVersion,
     makeCacheableSignalKeyStore
 } from "@whiskeysockets/baileys";
-import { Boom } from "@hapi/boom";
 
 async function startServer() {
     const app = express();
@@ -28,7 +27,7 @@ async function startServer() {
     const logger = pino({ level: 'silent' });
     const activeSockets = new Map();
 
-    // ENDPOINT UNTUK MENDAPATKAN KODE PAIRING (LOGIKA UTAMA KAMU)
+    // ENDPOINT UNTUK MENDAPATKAN KODE PAIRING
     app.post("/api/get-pairing-code", async (req, res) => {
         const { phoneNumber } = req.body;
 
@@ -39,7 +38,7 @@ async function startServer() {
         const cleanNumber = phoneNumber.replace(/[^0-9]/g, '');
         const sessionPath = path.join(sessionsDir, `session_${cleanNumber}`);
 
-        // Bersihkan socket lama jika ada untuk nomor yang sama
+        // Bersihkan socket lama jika ada
         if (activeSockets.has(cleanNumber)) {
             try {
                 const oldSock = activeSockets.get(cleanNumber);
@@ -51,7 +50,6 @@ async function startServer() {
         }
 
         try {
-            // Gunakan folder sesi spesifik per nomor
             const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
             const { version } = await fetchLatestBaileysVersion();
 
@@ -63,7 +61,7 @@ async function startServer() {
                     creds: state.creds,
                     keys: makeCacheableSignalKeyStore(state.keys, logger),
                 },
-                // Identitas browser agar notifikasi pairing muncul (Update terbaru)
+                // Identitas browser Chrome terbaru (Linux)
                 browser: ["Ubuntu", "Chrome", "110.0.5481.178"],
                 connectTimeoutMs: 60000,
             });
@@ -76,7 +74,8 @@ async function startServer() {
                 const { connection, lastDisconnect } = update;
                 
                 if (connection === 'close') {
-                    const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+                    // Penanganan error versi JS Murni
+                    const statusCode = lastDisconnect?.error?.output?.statusCode;
                     const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
                     
                     console.log(`[${cleanNumber}] Koneksi terputus:`, statusCode);
@@ -89,7 +88,6 @@ async function startServer() {
                     }
                 } else if (connection === 'open') {
                     console.log(`[${cleanNumber}] Bot berhasil terhubung!`);
-                    // Opsional: Kirim pesan ke nomor bot sendiri saat berhasil login
                     await sock.sendMessage(`${cleanNumber}@s.whatsapp.net`, { text: "Serika AI Pairing Hub Berhasil Terhubung! 🎉" });
                 }
             });
@@ -100,33 +98,33 @@ async function startServer() {
                     try {
                         if (activeSockets.has(cleanNumber)) {
                             const code = await sock.requestPairingCode(cleanNumber);
-                            console.log(`[${cleanNumber}] Generated Pairing Code: ${code}`);
+                            console.log(`[${cleanNumber}] Kode Pairing: ${code}`);
                             if (!res.headersSent) {
                                 res.json({ code });
                             }
                         }
                     } catch (err) {
-                        console.error(`[${cleanNumber}] Gagal minta kode pairing:`, err);
+                        console.error(`[${cleanNumber}] Gagal minta kode:`, err);
                         if (!res.headersSent) {
                             res.status(500).json({ error: "Gagal meminta kode pairing. Coba lagi." });
                         }
                     }
-                }, 6000); // Jeda 6 detik agar socket stabil
+                }, 6000); 
             } else {
                 if (!res.headersSent) {
-                    res.status(400).json({ error: "Nomor ini sudah terdaftar/login." });
+                    res.status(400).json({ error: "Nomor ini sudah login." });
                 }
             }
 
         } catch (error) {
             console.error("Server error:", error);
             if (!res.headersSent) {
-                res.status(500).json({ error: "Terjadi kesalahan pada server." });
+                res.status(500).json({ error: "Terjadi kesalahan server." });
             }
         }
     });
 
-    // --- SISANYA ADALAH KONFIGURASI VITE (SAMA SEPERTI KODE KAMU) ---
+    // --- CONFIG VITE ---
     if (process.env.NODE_ENV !== "production") {
         const vite = await createViteServer({
             server: { middlewareMode: true },
@@ -142,9 +140,9 @@ async function startServer() {
     }
 
     app.listen(PORT, "0.0.0.0", () => {
-        console.log(`Server jalan di http://localhost:${PORT}`);
+        console.log(`Server aktif di port ${PORT}`);
     });
 }
 
 startServer();
-        
+             
