@@ -32,7 +32,8 @@ async function startBot() {
         },
         printQRInTerminal: false,
         // Update identitas browser terbaru agar notifikasi muncul
-        browser: ["Ubuntu", "Chrome", "110.0.5481.178"] 
+        browser: ["Mac OS", "Chrome", "121.0.6167.184"]
+        
     });
 
     // SISTEM PAIRING
