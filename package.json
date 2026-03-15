@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "WhatsApp Bot Plugin System",
   "main": "index.js",
+  "type": "module",
   "dependencies": {
     "@whiskeysockets/baileys": "^6.6.0",
     "axios": "^1.6.0",
