@@ -1,7 +1,7 @@
 global.crypto = require('crypto'); 
 
 // --- CONFIG ---
-const BOT_NUMBER = "6283894587604"; // Masukkan nomor WA kamu di sini (Tanpa + atau spasi)
+const BOT_NUMBER = "6283894587604"; 
 const OWNER = BOT_NUMBER + "@s.whatsapp.net";
 
 const { 
@@ -17,8 +17,10 @@ const fs = require("fs");
 const path = require("path");
 
 async function startBot() {
-    // 1. Hapus folder session_serika di Github dulu agar ini jalan!
-    const { state, saveCreds } = await useMultiFileAuthState('session_serika');
+    // Menghapus folder lama agar sesi benar-benar segar
+    const sessionPath = './session_serika';
+    
+    const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
     const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
@@ -29,27 +31,32 @@ async function startBot() {
             keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })),
         },
         printQRInTerminal: false,
-        // Identitas agar notifikasi pairing muncul otomatis
-        browser: ["Mac OS", "Chrome", "121.0.6167.184"]
-
+        // Update identitas browser terbaru agar notifikasi muncul
+        browser: ["Ubuntu", "Chrome", "110.0.5481.178"] 
     });
 
-    // 2. SISTEM AUTO-PAIRING KE NOMOR CONFIG
+    // SISTEM PAIRING
     if (!sock.authState.creds.registered) {
         let phoneNumber = BOT_NUMBER.replace(/[^0-9]/g, '');
         
-        console.log(`⏳ Memancing notifikasi pairing ke: ${phoneNumber}...`);
-        await delay(10000); // Tunggu server siap
+        console.log(`\n[!] Menunggu koneksi server untuk nomor: ${phoneNumber}...`);
         
-        try {
-            const code = await sock.requestPairingCode(phoneNumber);
-            console.log(`\n======================================`);
-            console.log(`✅ KODE PAIRING KAMU: ${code}`);
-            console.log(`======================================\n`);
-            console.log(`Cek notifikasi di HP kamu, Do!`);
-        } catch (err) {
-            console.error("❌ Gagal mengirim pairing. Coba hapus folder session_serika dan push lagi.");
-        }
+        // Jeda 6 detik sangat krusial agar server siap menerima request pairing
+        setTimeout(async () => {
+            try {
+                const code = await sock.requestPairingCode(phoneNumber);
+                console.log(`\n======================================`);
+                console.log(`✅ KODE PAIRING ANDA: ${code}`);
+                console.log(`======================================\n`);
+                console.log(`Jika notifikasi tidak muncul otomatis:`);
+                console.log(`1. Buka WA > Perangkat Tertaut`);
+                console.log(`2. Klik Tautkan Perangkat`);
+                console.log(`3. Pilih 'Tautkan dengan nomor telepon saja' di bagian bawah.`);
+                console.log(`4. Masukkan kode: ${code}`);
+            } catch (err) {
+                console.error("❌ Gagal mendapatkan kode. Pastikan koneksi internet stabil.");
+            }
+        }, 6000); 
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -57,8 +64,8 @@ async function startBot() {
     sock.ev.on('connection.update', (u) => {
         const { connection, lastDisconnect } = u;
         if (connection === 'open') {
-            console.log("\n✅ SERIKA AI ONLINE!");
-            sock.sendMessage(OWNER, { text: "Bot berhasil terhubung! 🎉" });
+            console.log("\n✅ BERHASIL TERHUBUNG!");
+            sock.sendMessage(OWNER, { text: "Serika AI sudah aktif, Do! 🎉" });
         }
         if (connection === 'close') {
             const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
@@ -79,7 +86,6 @@ async function startBot() {
             const command = body.slice(1).trim().split(/ +/)[0].toLowerCase();
             const args = body.trim().split(/ +/).slice(1);
 
-            // LOAD SISTEM PLUGINS
             const pluginFolder = path.resolve(__dirname, 'plugins');
             if (fs.existsSync(pluginFolder)) {
                 const pluginFiles = fs.readdirSync(pluginFolder).filter(file => file.endsWith('.js'));
@@ -97,4 +103,4 @@ async function startBot() {
 }
 
 startBot().catch(err => console.error(err));
-                
+            
