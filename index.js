@@ -1,212 +1,203 @@
-// index.js - Tahap 1: Kerangka Dasar Baileys
-const { default: makeWASocket, useMultiFileAuthState } = require('@whiskeysockets/baileys');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    delay 
+} = require("@whiskeysockets/baileys");
 const pino = require('pino');
+const fs = require('fs');
+const axios = require('axios');
+const http = require('http');
 
-async function startBot() {
-    // Menyimpan sesi agar tidak perlu scan/login ulang terus menerus
+// --- SERVER UNTUK KOYEB (KEEP ALIVE) ---
+// Koyeb mengharuskan aplikasi listen ke port tertentu agar tidak dianggap mati/crash
+http.createServer((req, res) => {
+  res.write('Bot Zekais is Online!');
+  res.end();
+}).listen(process.env.PORT || 8080);
+
+// --- DATABASE SYSTEM ---
+if (!fs.existsSync('./database.json')) fs.writeFileSync('./database.json', '{}');
+let db = JSON.parse(fs.readFileSync('./database.json'));
+function saveDB() { fs.writeFileSync('./database.json', JSON.stringify(db, null, 2)); }
+
+async function startZekaisBot() {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
+    const { version } = await fetchLatestBaileysVersion();
 
     const sock = makeWASocket({
-        logger: pino({ level: 'silent' }), // Menyembunyikan log yang tidak perlu
-        printQRInTerminal: true, // Ganti ke false jika nanti ingin fokus pakai pairing code
+        version,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false, // Wajib false untuk pairing code
         auth: state,
-        browser: ['Zekais Bot', 'Safari', '1.0.0']
+        browser: ['Chrome (Linux)', 'Chrome', ''] // Wajib untuk pairing code
     });
+
+    // --- LOGIKA PAIRING CODE UNTUK CLOUD (KOYEB) ---
+    if (!sock.authState.creds.registered) {
+        // GANTI NOMOR DI BAWAH INI DENGAN NOMOR WHATSAPP KAMU (Gunakan format 62xxx)
+        const phoneNumber = "6283894587604"; 
+        
+        setTimeout(async () => {
+            try {
+                let code = await sock.requestPairingCode(phoneNumber);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log("========================================");
+                console.log(`KODE PAIRING KAMU: ${code}`);
+                console.log("========================================");
+            } catch (error) {
+                console.error("Gagal mendapatkan pairing code:", error);
+            }
+        }, 3000); // Jeda 3 detik agar koneksi stabil dulu
+    }
 
     sock.ev.on('creds.update', saveCreds);
 
-    // Membaca pesan masuk
-    sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+    sock.ev.on('connection.update', (update) => {
+        const { connection, lastDisconnect } = update;
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            if (shouldReconnect) startZekaisBot();
+        } else if (connection === 'open') {
+            console.log('✅ Berhasil terhubung ke WhatsApp!');
+        }
+    });
 
-        // Ekstraksi teks dari pesan
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        const sender = msg.key.remoteJid;
-        const pushName = msg.pushName || "Pengguna";
+    sock.ev.on('messages.upsert', async ({ messages }) => {
+        const m = messages[0];
+        if (!m.message || m.key.fromMe) return;
 
-        // Memisahkan command dan argumen
-        const command = text.trim().split(" ")[0].toLowerCase();
+        const from = m.key.remoteJid;
+        const type = Object.keys(m.message)[0];
+        const pushName = m.pushName || "User";
+        const body = (type === 'conversation') ? m.message.conversation : (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text : (type === 'imageMessage') ? m.message.imageMessage.caption : (type === 'videoMessage') ? m.message.videoMessage.caption : '';
+        const prefix = '.';
+        const isCmd = body.startsWith(prefix);
+        const command = isCmd ? body.slice(prefix.length).trim().split(/ +/).shift().toLowerCase() : null;
+        const args = body.trim().split(/ +/).slice(1);
+        const isGroup = from.endsWith('@g.us');
 
-        // ----------------- DAFTAR PERINTAH -----------------
+        // --- OWNER SETTING ---
+        const ownerNumber = "628xxxxxxxxxx@s.whatsapp.net"; // GANTI DENGAN NOMOR WA KAMU
+        const isOwner = ownerNumber === from || m.key.participant === ownerNumber;
+
+        // --- DATABASE INIT ---
+        if (!db[from]) {
+            db[from] = { nama: pushName, level: 1, coin: 0, limit: 22, point: 15, lastMisi: 0, banned: false, isVip: false };
+            saveDB();
+        }
+        let user = db[from];
+        if (user.banned && !isOwner) return;
+
+        // --- GROUP LOGIC ---
+        let groupMetadata = isGroup ? await sock.groupMetadata(from) : null;
+        let participants = isGroup ? groupMetadata.participants : [];
+        let admins = isGroup ? participants.filter(p => p.admin !== null).map(p => p.id) : [];
+        let isAdmin = admins.includes(m.key.participant) || isOwner;
+        let isBotAdmin = admins.includes(sock.user.id.split(':')[0] + '@s.whatsapp.net');
+
+        // --- ANTI LINK ---
+        if (isGroup && body.includes('chat.whatsapp.com/') && !isAdmin && isBotAdmin) {
+            await sock.sendMessage(from, { delete: m.key });
+            await sock.groupParticipantsUpdate(from, [m.key.participant], "remove");
+            return;
+        }
+
+        if (!isCmd) return;
+
+        // --- COMMANDS ---
         switch (command) {
-            case '.menu':
-            case '.help':
-                const menuText = `⬡ ᴢᴇᴋᴀɪꜱ ⊹ ʙ0ᴛ ⬡
+            case 'menu':
+            case 'help':
+                const menu = `*⬡ ᴢᴇᴋᴀɪꜱ ⊹ ʙ0ᴛ ⬡*
 
-> ⚠️ BOT ini *GRATIS* masuk Grupmu!
-> Dilarang Keras *MENYEWAKAN* bot ini ⚠️
+*👤 PROFIL USER*
+ID: @${from.split('@')[0]}
+Nama: ${user.nama}
+Level: ${user.level}
+Coin: ${user.coin}
+Limit: ${user.limit}/22
+Point: ${user.point}/15
 
-╭─「 👤 *ᴘʀᴏꜰɪʟ ᴜꜱᴇʀ* 」
-│  🏷️  *Nama* ⟫  ${pushName}
-│  🎚️  *Level* ⟫  1
-│  💰  *Coin* ⟫  0
-│  🎫  *Limit* ⟫  22 / 22
-│  🎮  *Point* ⟫  15 / 15
-╰──⊷
+*📥 DOWNLOADER*
+.tiktok <link>
+.yt <link>
 
-_Hai Ka_ @${sender.split('@')[0]} 👋
-_Aku BOT Game Pokemon & Mancing_ 🐾🐟
+*🎮 GAME*
+.misi (Claim Harian)
+.mancing
 
-Ketik *.ping* untuk cek status bot.
-*(Sisa menu akan ditambahkan di tahap selanjutnya)*`;
-                
-                await sock.sendMessage(sender, { text: menuText, mentions: [sender] }, { quoted: msg });
+*🛠️ TOOLS*
+.tr <lang> <teks>
+.cuaca <kota>
+
+*👥 GROUP*
+.hidetag <teks>
+.kick @tag
+.closegrup
+.opengrup
+
+*💎 VVIP & OWNER*
+.rvo (Balas pesan skali lihat)
+.addlimit @tag <jumlah>
+.ban @tag`;
+                await sock.sendMessage(from, { text: menu, mentions: [from] }, { quoted: m });
                 break;
 
-            case '.ping':
-                await sock.sendMessage(sender, { text: 'Bot Zekais aktif dan merespon dengan cepat! 🚀' }, { quoted: msg });
+            case 'ping':
+                await sock.sendMessage(from, { text: 'Pong!' }, { quoted: m });
+                break;
+
+            case 'misi':
+                const now = Date.now();
+                if (now - user.lastMisi < 86400000) {
+                    return sock.sendMessage(from, { text: '⏳ Misi sudah diambil hari ini.' }, { quoted: m });
+                }
+                user.coin += 500;
+                user.limit = 22;
+                user.lastMisi = now;
+                saveDB();
+                await sock.sendMessage(from, { text: '🎉 Misi sukses! +500 Coin & Reset Limit.' }, { quoted: m });
+                break;
+
+            case 'mancing':
+                if (user.limit <= 0) return sock.sendMessage(from, { text: '❌ Limit habis.' });
+                user.limit -= 1;
+                const ikan = ['🐟 Nila', '🐡 Buntal', '🦈 Hiu', '🥾 Sepatu'];
+                const dapat = ikan[Math.floor(Math.random() * ikan.length)];
+                user.coin += 50;
+                saveDB();
+                await sock.sendMessage(from, { text: `🎣 Dapat: *${dapat}*!\nSisa Limit: ${user.limit}` }, { quoted: m });
+                break;
+
+            case 'tiktok':
+            case 'tt':
+                if (!args[0]) return;
+                await sock.sendMessage(from, { text: '⏳ Processing...' });
+                try {
+                    const res = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${args[0]}`);
+                    await sock.sendMessage(from, { video: { url: res.data.video.noWatermark }, caption: 'Done!' }, { quoted: m });
+                } catch { await sock.sendMessage(from, { text: '❌ Error: Link tidak valid atau server down.' }); }
+                break;
+
+            case 'hidetag':
+            case 'h':
+                if (!isAdmin) return;
+                sock.sendMessage(from, { text: args.join(" "), mentions: participants.map(a => a.id) });
+                break;
+            
+            case 'rvo':
+                if (!user.isVip) return;
+                const q = m.message.extendedTextMessage?.contextInfo?.quotedMessage;
+                const viewOnce = q?.viewOnceMessageV2 || q?.viewOnceMessage;
+                if (viewOnce) {
+                    await sock.sendMessage(from, { forward: viewOnce.message }, { quoted: m });
+                }
                 break;
         }
     });
 }
 
-startBot();
-               
-// Tambahkan library axios di bagian paling atas (install: npm install axios)
-const axios = require('axios');
-
-// ... (kode sebelumnya: startBot, database, dll)
-
-        // ----------------- FITUR DOWNLOADER & TOOLS -----------------
-        switch (command) {
-            // --- DOWNLOADER ---
-            case '.tiktok':
-            case '.tt':
-                if (!args[0]) return sock.sendMessage(sender, { text: 'Sertakan link TikToknya kak!' }, { quoted: msg });
-                await sock.sendMessage(sender, { text: '⏳ Sedang mengunduh video TikTok...' });
-                try {
-                    // Contoh menggunakan API publik (Ganti dengan API Key milikmu jika ada)
-                    const res = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${args[0]}`);
-                    await sock.sendMessage(sender, { video: { url: res.data.video.noWatermark }, caption: 'Selesai!' }, { quoted: msg });
-                } catch (e) {
-                    await sock.sendMessage(sender, { text: '❌ Gagal mengunduh video. Pastikan link benar.' });
-                }
-                break;
-
-            case '.yt':
-            case '.youtube':
-                if (!args[0]) return sock.sendMessage(sender, { text: 'Sertakan link YouTube-nya!' }, { quoted: msg });
-                await sock.sendMessage(sender, { text: '⏳ Sedang memproses YouTube...' });
-                // Note: Untuk YouTube disarankan memakai library ytdl-core atau API pihak ketiga
-                await sock.sendMessage(sender, { text: 'Fitur YouTube sedang dalam sinkronisasi API.' });
-                break;
-
-            // --- TOOLS ---
-            case '.tr':
-            case '.translate':
-                if (!args[0]) return sock.sendMessage(sender, { text: 'Contoh: .tr en halo apa kabar' }, { quoted: msg });
-                try {
-                    const lang = args[0];
-                    const textToTr = args.slice(1).join(" ");
-                    const res = await axios.get(`https://api.popcat.xyz/translate?to=${lang}&text=${encodeURIComponent(textToTr)}`);
-                    await sock.sendMessage(sender, { text: `*Hasil Terjemahan (${lang}):*\n\n${res.data.translated}` }, { quoted: msg });
-                } catch (e) {
-                    await sock.sendMessage(sender, { text: '❌ Gagal menerjemahkan.' });
-                }
-                break;
-
-            case '.cuaca':
-            case '.weather':
-                if (!args[0]) return sock.sendMessage(sender, { text: 'Sebutkan nama kotanya!' }, { quoted: msg });
-                try {
-                    const city = args.join(" ");
-                    const res = await axios.get(`https://api.openweathermap.org/data/2.5/weather?q=${city}&appid=API_KEY_ANDA&units=metric`);
-                    const hasil = `📍 *Cuaca di ${res.data.name}*\n\n🌡️ Suhu: ${res.data.main.temp}°C\n☁️ Kondisi: ${res.data.weather[0].description}`;
-                    await sock.sendMessage(sender, { text: hasil }, { quoted: msg });
-                } catch (e) {
-                    await sock.sendMessage(sender, { text: '❌ Kota tidak ditemukan.' });
-                }
-                break;
-
-            case '.hd':
-            case '.remini':
-                // Logika dasar pengecekan gambar (akan diperdalam di tahap selanjutnya)
-                await sock.sendMessage(sender, { text: 'Kirim gambar dengan caption .hd atau balas gambar dengan .hd' });
-                break;
-}
-
-// --- FITUR MANAJEMEN GRUP & VVIP ---
-const isGroup = sender.endsWith('@g.us');
-const groupMetadata = isGroup ? await sock.groupMetadata(sender) : null;
-const participants = isGroup ? groupMetadata.participants : [];
-const admins = isGroup ? participants.filter(p => p.admin !== null).map(p => p.id) : [];
-
-// Variabel pengecekan hak akses
-const isOwner = "628xxx@s.whatsapp.net" === sender; // Ganti dengan nomor WhatsApp kamu
-const isVip = db[sender]?.isVip || isOwner;
-const isAdmin = admins.includes(sender) || isOwner;
-const isBotAdmin = admins.includes(sock.user.id.split(':')[0] + '@s.whatsapp.net');
-
-// --- LOGIKA ANTI-LINK (Simpel) ---
-if (isGroup && text.includes('chat.whatsapp.com/')) {
-    if (!isAdmin && isBotAdmin) {
-        await sock.sendMessage(sender, { delete: msg.key }); // Hapus pesan link
-        await sock.groupParticipantsUpdate(sender, [sender], "remove"); // Kick pengirim
-        return;
-    }
-}
-
-switch (command) {
-    // --- FITUR GRUP ---
-    case '.hidetag':
-    case '.h':
-        if (!isAdmin) return sock.sendMessage(sender, { text: '❌ Hanya Admin yang bisa pakai ini!' });
-        const teksHidetag = args.join(" ") || "Halo semuanya!";
-        sock.sendMessage(sender, { 
-            text: teksHidetag, 
-            mentions: participants.map(a => a.id) 
-        });
-        break;
-
-    case '.kick':
-        if (!isAdmin) return;
-        let userToKick = msg.message.extendedTextMessage?.contextInfo?.mentionedJid[0] || args[0] + "@s.whatsapp.net";
-        await sock.groupParticipantsUpdate(sender, [userToKick], "remove");
-        break;
-
-    case '.closegrup':
-        if (!isAdmin || !isBotAdmin) return;
-        await sock.groupSettingUpdate(sender, 'announcement');
-        await sock.sendMessage(sender, { text: '🔒 Grup telah ditutup. Hanya admin yang bisa mengirim pesan.' });
-        break;
-
-    case '.opengrup':
-        if (!isAdmin || !isBotAdmin) return;
-        await sock.groupSettingUpdate(sender, 'not_announcement');
-        await sock.sendMessage(sender, { text: '🔓 Grup telah dibuka kembali.' });
-        break;
-
-    // --- FITUR VVIP ---
-    case '.rvo': // Read View Once (Melihat pesan sekali lihat)
-        if (!isVip) return sock.sendMessage(sender, { text: '💎 Fitur ini khusus member VVIP.' });
-        const viewOnceMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage?.viewOnceMessageV2;
-        if (viewOnceMsg) {
-            await sock.sendMessage(sender, { forward: viewOnceMsg.message }, { quoted: msg });
-        } else {
-            await sock.sendMessage(sender, { text: 'Balas pesan "Sekali Lihat" dengan .rvo' });
-        }
-        break;
-
-    // --- FITUR OWNER (SUPER ADMIN) ---
-    case '.addlimit':
-        if (!isOwner) return;
-        let target = msg.message.extendedTextMessage?.contextInfo?.mentionedJid[0];
-        if (!target) return;
-        db[target].limit += parseInt(args[1]) || 10;
-        saveDB();
-        await sock.sendMessage(sender, { text: `✅ Berhasil menambah limit untuk @${target.split('@')[0]}`, mentions: [target] });
-        break;
-
-    case '.ban':
-        if (!isOwner) return;
-        let bannel = msg.message.extendedTextMessage?.contextInfo?.mentionedJid[0];
-        db[bannel].banned = true;
-        saveDB();
-        await sock.sendMessage(sender, { text: '🚫 User telah diblokir dari bot.' });
-        break;
-}
-
-// Cek status Banned di awal (tambahkan di awal messages.upsert)
-// if (db[sender]?.banned) return; 
-    
+startZekaisBot();
+        
