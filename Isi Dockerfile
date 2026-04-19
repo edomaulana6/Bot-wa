@@ -1,0 +1,25 @@
+FROM node:22
+
+# Instal dependensi sistem yang dibutuhkan Baileys
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    imagemagick \
+    webp && \
+    apt-get clean
+
+WORKDIR /usr/src/app
+
+# Salin package.json saja dulu untuk instalasi
+COPY package.json ./
+
+# Instal semua modul secara paksa
+RUN npm install
+
+# Salin semua file project
+COPY . .
+
+# Ekspos port agar Koyeb tidak crash
+EXPOSE 8080
+
+# Jalankan bot
+CMD ["node", "index.js"]
