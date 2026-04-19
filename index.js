@@ -79,7 +79,7 @@ async function startZekaisBot() {
         const isGroup = from.endsWith('@g.us');
 
         // --- OWNER SETTING ---
-        const ownerNumber = "628xxxxxxxxxx@s.whatsapp.net"; // GANTI DENGAN NOMOR WA KAMU
+        const ownerNumber = "6283894587604@s.whatsapp.net"; // GANTI DENGAN NOMOR WA KAMU
         const isOwner = ownerNumber === from || m.key.participant === ownerNumber;
 
         // --- DATABASE INIT ---
