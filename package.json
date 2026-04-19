@@ -1,21 +1,20 @@
 {
-  "name": "zekais-bot",
+  "name": "edo-bot-wa",
   "version": "1.0.0",
-  "description": "WhatsApp Bot using Baileys",
+  "description": "WhatsApp Bot for Koyeb",
   "main": "index.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node index.js"
   },
-  "keywords": ["whatsapp", "bot", "baileys"],
-  "author": "edomaulana",
-  "license": "MIT",
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.5",
-    "axios": "^1.6.8",
-    "pino": "^8.17.0"
+    "@whiskeysockets/baileys": "^6.6.0",
+    "axios": "^1.6.0",
+    "pino": "^8.16.1",
+    "yt-search": "^2.10.4",
+    "ytdl-core": "^4.11.5",
+    "link-preview-js": "^3.0.0"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=16.0.0"
   }
 }
