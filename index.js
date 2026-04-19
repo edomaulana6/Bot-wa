@@ -9,6 +9,8 @@ const pino = require('pino');
 const fs = require('fs');
 const axios = require('axios');
 const http = require('http');
+const yts = require('yt-search');
+const ytdl = require('ytdl-core');
 
 // --- KEEP ALIVE SERVER ---
 http.createServer((req, res) => {
@@ -136,10 +138,10 @@ async function startBot() {
 
 *DOWNLOADER*
 1. play (judul lagu)
-2. tt (link tiktok)
-3. ig (link instagram)
-4. ytmp4 (link youtube video)
-5. ytmp3 (link youtube audio)
+2. ytmp4 (link youtube video)
+3. ytmp3 (link youtube audio)
+4. tt (link tiktok)
+5. ig (link instagram)
 6. git (link github repo)
 7. mediafire (link download)
 
@@ -166,13 +168,32 @@ async function startBot() {
 25. bot (sapaan bot)`);
                     break;
 
-                // --- DOWNLOADER ---
+                // --- DOWNLOADER (YT-DL INTEGRATED) ---
                 case 'play':
-                    if (!text) return reply('Mau lagu apa?');
+                case 'ytmp3':
+                    if (!text) return reply('Masukkan judul lagu atau link YouTube!');
                     try {
-                        const res = await axios.get(`https://api.vreden.web.id/api/ytplay?query=${text}`);
-                        await sock.sendMessage(from, { audio: { url: res.data.result.download.url }, mimetype: 'audio/mp4' }, { quoted: m });
-                    } catch { reply('Gagal mencari lagu.'); }
+                        reply('Sabar ya, lagi diproses...');
+                        const search = await yts(text);
+                        const video = search.videos[0];
+                        if (!video) return reply('Lagu tidak ditemukan.');
+
+                        const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' });
+                        await sock.sendMessage(from, { 
+                            audio: { stream: stream }, 
+                            mimetype: 'audio/mp4',
+                            fileName: `${video.title}.mp3`
+                        }, { quoted: m });
+                    } catch (e) { reply('Gagal memutar lagu. Coba lagi nanti.'); }
+                    break;
+
+                case 'ytmp4':
+                    if (!text) return reply('Masukkan link YouTube!');
+                    try {
+                        reply('Lagi download videonya...');
+                        const stream = ytdl(text, { filter: 'formatany', quality: 'highest' });
+                        await sock.sendMessage(from, { video: { stream: stream }, caption: 'Nih videonya' }, { quoted: m });
+                    } catch (e) { reply('Gagal download video YouTube.'); }
                     break;
 
                 case 'tt':
@@ -180,7 +201,7 @@ async function startBot() {
                     try {
                         const res = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${args[0]}`);
                         await sock.sendMessage(from, { video: { url: res.data.video.noWatermark }, caption: 'Nih videonya' }, { quoted: m });
-                    } catch { reply('Gagal download.'); }
+                    } catch { reply('Gagal download TikTok.'); }
                     break;
 
                 case 'ig':
@@ -189,14 +210,6 @@ async function startBot() {
                         const res = await axios.get(`https://api.vreden.web.id/api/igdl?url=${args[0]}`);
                         await sock.sendMessage(from, { video: { url: res.data.result[0].url } }, { quoted: m });
                     } catch { reply('Error download IG.'); }
-                    break;
-
-                case 'ytmp4':
-                    if (!args[0]) return reply('Link mana?');
-                    try {
-                        const res = await axios.get(`https://api.vreden.web.id/api/ytdl?url=${args[0]}`);
-                        await sock.sendMessage(from, { video: { url: res.data.result.video[0].downloadUrl } }, { quoted: m });
-                    } catch { reply('Gagal download video.'); }
                     break;
 
                 // --- TOOLS ---
@@ -267,4 +280,3 @@ async function startBot() {
 }
 
 startBot();
-        
