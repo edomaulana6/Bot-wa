@@ -18,22 +18,16 @@ const yts = require('yt-search');
 const { downloadAudio, downloadVideo } = require('./lib/ytdlp');
 
 // --- KONFIGURASI ---
-const owner = process.env.OWNER_NUMBER || "6283894587604@s.whatsapp.net";
-const pairingNumber = (process.env.BOT_NUMBER || "6283894587604").replace(/[^0-9]/g, '');
-
-// --- KEEP ALIVE SERVER ---
-http.createServer((req, res) => {
-    res.write('Bot Online');
-    res.end();
-}).listen(process.env.PORT || 8080);
+const owner = "6283894587604@s.whatsapp.net";
+const pairingNumber = "6283894587604";
 
 // --- DATABASE ---
 if (!fs.existsSync('./database.json')) fs.writeFileSync('./database.json', '{}');
 let db = JSON.parse(fs.readFileSync('./database.json'));
+function saveDB() { fs.writeFileSync('./database.json', JSON.stringify(db, null, 2)); }
 
-function saveDB() {
-    fs.writeFileSync('./database.json', JSON.stringify(db, null, 2));
-}
+// --- KEEP ALIVE ---
+http.createServer((req, res) => { res.write('Bot Online'); res.end(); }).listen(process.env.PORT || 8080);
 
 const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
 
@@ -56,31 +50,25 @@ async function startBot() {
         auth: state,
         browser: ["Ubuntu", "Chrome", "20.0.04"],
         connectTimeoutMs: 60000,
-        defaultQueryTimeoutMs: 0,
-        keepAliveIntervalMs: 10000,
-        emitOwnEvents: true,
-        fireInitQueries: true,
-        generateHighQualityLinkPreview: true,
-        syncFullHistory: false,
-        markOnlineOnConnect: true
+        keepAliveIntervalMs: 15000,
     });
 
     store.bind(sock.ev);
 
-    // --- PAIRING CODE LOGIC ---
+    // --- PAIRING CODE ---
     if (!sock.authState.creds.registered) {
-        console.log(`\n[!] MENCARI KODE PAIRING UNTUK NOMOR: ${pairingNumber}`);
+        console.log(`\n[[[ PERHATIAN: MENYIAPKAN KODE PAIRING ]]]`);
+        console.log(`TARGET NOMOR: ${pairingNumber}`);
         setTimeout(async () => {
             try {
                 let code = await sock.requestPairingCode(pairingNumber);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log("\n=================================");
                 console.log("KODE PAIRING ANDA:", code);
-                console.log("=================================\n");
-            } catch (err) {
-                console.log("Gagal mengambil kode pairing:", err.message);
-            }
-        }, 10000);
+                console.log("NOMOR TARGET:", pairingNumber);
+                console.log("=================================");
+            } catch (err) { console.log("Gagal pairing:", err.message); }
+        }, 15000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -100,13 +88,13 @@ async function startBot() {
         }
     });
 
-    // --- GROUP UPDATE ---
+    // --- WELCOME ---
     sock.ev.on('group-participants.update', async (anu) => {
         try {
             let metadata = await sock.groupMetadata(anu.id);
             for (let num of anu.participants) {
                 if (anu.action == 'add') {
-                    sock.sendMessage(anu.id, { text: `Selamat datang @${num.split('@')[0]}!`, mentions: [num] });
+                    sock.sendMessage(anu.id, { text: `Halo @${num.split('@')[0]}! Selamat datang di *${metadata.subject}*`, mentions: [num] });
                 }
             }
         } catch {}
@@ -134,6 +122,7 @@ async function startBot() {
             const from = m.key.remoteJid;
             const type = Object.keys(m.message)[0];
             const sender = m.key.participant || m.key.remoteJid;
+            const pushName = m.pushName || "User";
             const body = (type === 'conversation') ? m.message.conversation : (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text : (type == 'imageMessage') ? m.message.imageMessage.caption : (type == 'videoMessage') ? m.message.videoMessage.caption : '';
 
             antiDelete[m.key.id] = { body, sender };
@@ -146,30 +135,25 @@ async function startBot() {
 
             const isGroup = from.endsWith('@g.us');
             const isOwner = sender === owner;
+            const reply = (teks) => sock.sendMessage(from, { text: teks }, { quoted: m });
 
-            if (!db[sender]) {
-                db[sender] = { nama: m.pushName || "User", coin: 100, limit: 25 };
-                saveDB();
-            }
-            const user = db[sender];
+            if (!db[sender]) { db[sender] = { nama: pushName, coin: 100 }; saveDB(); }
 
             const groupMetadata = isGroup ? await sock.groupMetadata(from).catch(() => ({})) : {};
             const participants = isGroup ? groupMetadata.participants || [] : [];
-            const groupAdmins = isGroup ? getGroupAdmins(participants) : [];
+            const admins = isGroup ? getGroupAdmins(participants) : [];
             const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-            const isBotAdmins = groupAdmins.includes(botNumber) || false;
-            const isAdmins = groupAdmins.includes(sender) || isOwner || false;
-
-            const reply = (teks) => sock.sendMessage(from, { text: teks }, { quoted: m });
+            const isBotAdmins = admins.includes(botNumber);
+            const isAdmins = admins.includes(sender) || isOwner;
 
             // Anti Link
             if (isGroup && isBotAdmins && !isAdmins && (body.includes('chat.whatsapp.com/') || body.includes('wa.me/'))) {
                 await sock.sendMessage(from, { delete: m.key });
                 await sock.groupParticipantsUpdate(from, [sender], 'remove');
-                return reply('Link terdeteksi! Kamu dikeluarkan.');
+                return;
             }
 
-            // Selection Logic
+            // Selection
             if (!isCmd && /^\d+$/.test(body) && searchResults[from] && searchResults[from].sender === sender) {
                 const num = parseInt(body);
                 const res = searchResults[from].results;
@@ -195,7 +179,7 @@ async function startBot() {
             switch (command) {
                 case 'menu':
                 case 'help':
-                    reply(`Halo *${m.pushName}*! 🤖
+                    reply(`Halo *${pushName}*! 🤖
 
 *DOWNLOADER*
 > .play <judul>
@@ -206,8 +190,7 @@ async function startBot() {
 
 *GROUP MENU*
 > .kick, .promote, .demote
-> .hidetag, .tagall
-> .group open/close
+> .hidetag, .tagall, .group open/close
 > .linkgroup, .revoke
 
 *AI MENU*
@@ -239,6 +222,18 @@ async function startBot() {
                     } catch (e) { reply(`Gagal: ${e.message}`); }
                     break;
 
+                case 'kick':
+                case 'promote':
+                case 'demote':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return;
+                    let target = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
+                    await sock.groupParticipantsUpdate(from, target, command);
+                    break;
+
+                case 'hidetag':
+                    if (isGroup && isAdmins) sock.sendMessage(from, { text: text || '', mentions: participants.map(v => v.id) });
+                    break;
+
                 case 'ai':
                     if (!text) return reply('Tanya?');
                     const res = await axios.get(`https://api.vreden.web.id/api/gpt?query=${encodeURIComponent(text)}`);
@@ -246,60 +241,6 @@ async function startBot() {
                     break;
 
                 case 'ping': reply('Pong! 🏓'); break;
-
-                case 'hidetag':
-                    if (isGroup && isAdmins) sock.sendMessage(from, { text: text || '', mentions: participants.map(v => v.id) });
-                    break;
-
-                case 'tagall':
-                    if (isGroup && isAdmins) {
-                        let t = `*TAG ALL*\n\n${text}\n\n` + participants.map(v => ` @${v.id.split('@')[0]}`).join('\n');
-                        sock.sendMessage(from, { text: t, mentions: participants.map(v => v.id) });
-                    }
-                    break;
-
-                case 'kick':
-                case 'promote':
-                case 'demote':
-                    if (!isGroup || !isAdmins || !isBotAdmins) return;
-                    let t = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
-                    await sock.groupParticipantsUpdate(from, t, command);
-                    break;
-
-                case 'group':
-                    if (!isGroup || !isAdmins || !isBotAdmins) return;
-                    await sock.groupSettingUpdate(from, args[0] === 'open' ? 'not_announcement' : 'announcement');
-                    reply(`Grup ${args[0]}.`);
-                    break;
-
-                case 'linkgroup':
-                    if (!isGroup || !isBotAdmins) return;
-                    reply(`https://chat.whatsapp.com/${await sock.groupInviteCode(from)}`);
-                    break;
-
-                case 'revoke':
-                    if (!isGroup || !isAdmins || !isBotAdmins) return;
-                    await sock.groupRevokeInvite(from);
-                    reply('Link reset.');
-                    break;
-
-                case 'me':
-                    reply(`*PROFIL*\nNama: ${user.nama}\nKoin: ${user.coin}`);
-                    break;
-
-                case 'misi':
-                    const n = Date.now();
-                    if (n - user.lastMisi < 86400000) return reply('Besok.');
-                    user.coin += 100; user.lastMisi = n;
-                    saveDB();
-                    reply('Sukses!');
-                    break;
-
-                case 'khodam':
-                    if (!text) return reply('Nama?');
-                    const k = ['Macan Sakti', 'Kucing Oren', 'Naga Hitam', 'Cacing Tanah', 'Tikus Got', 'Singa Putih', 'Jin Qorin'];
-                    reply(`Khodam *${text}*: ${k[Math.floor(Math.random() * k.length)]}`);
-                    break;
             }
         } catch (err) { console.log(err); }
     });
