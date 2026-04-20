@@ -62,12 +62,16 @@ async function startBot() {
 
     if (!sock.authState.creds.registered) {
         setTimeout(async () => {
-            let code = await sock.requestPairingCode(pairingNumber);
-            code = code?.match(/.{1,4}/g)?.join("-") || code;
-            console.log("=================================");
-            console.log("KODE PAIRING ANDA:", code);
-            console.log("=================================");
-        }, 3000);
+            try {
+                let code = await sock.requestPairingCode(pairingNumber);
+                code = code?.match(/.{1,4}/g)?.join("-") || code;
+                console.log("=================================");
+                console.log("KODE PAIRING ANDA:", code);
+                console.log("=================================");
+            } catch (err) {
+                console.log("Gagal mengambil kode pairing:", err.message);
+            }
+        }, 6000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -76,8 +80,12 @@ async function startBot() {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
-            if (reason === DisconnectReason.loggedOut) { console.log(`Device Logged Out`); }
-            else { startBot(); }
+            if (reason === DisconnectReason.loggedOut) {
+                console.log(`Device Logged Out, hapus folder auth_info dan scan ulang.`);
+            } else {
+                console.log("Koneksi terputus, mencoba menyambung kembali...");
+                startBot();
+            }
         } else if (connection === 'open') {
             console.log('✅ Tersambung ke WhatsApp');
         }
