@@ -61,17 +61,27 @@ async function startBot() {
     store.bind(sock.ev);
 
     if (!sock.authState.creds.registered) {
-        setTimeout(async () => {
+        const requestPairing = async () => {
             try {
                 let code = await sock.requestPairingCode(pairingNumber);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log("=================================");
-                console.log("KODE PAIRING ANDA:", code);
+                console.log("KODE PAIRING ANDA (Update tiap 30 detik):", code);
                 console.log("=================================");
             } catch (err) {
                 console.log("Gagal mengambil kode pairing:", err.message);
             }
-        }, 6000);
+        };
+
+        // Permintaan pertama setelah 6 detik
+        setTimeout(requestPairing, 6000);
+
+        // Permintaan berulang setiap 30 detik sesuai permintaan user
+        setInterval(async () => {
+            if (!sock.authState.creds.registered) {
+                await requestPairing();
+            }
+        }, 30000);
     }
 
     sock.ev.on('creds.update', saveCreds);
