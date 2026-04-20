@@ -14,7 +14,7 @@ const fs = require('fs');
 const axios = require('axios');
 const http = require('http');
 const path = require('path');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const yts = require('yt-search');
 const { downloadAudio, downloadVideo } = require('./lib/ytdlp');
 
@@ -41,7 +41,7 @@ const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream
 const getGroupAdmins = (participants) => {
     let admins = [];
     for (let i of participants) {
-        i.admin === "admin" || i.admin === "superadmin" ? admins.push(i.id) : "";
+        if (i.admin === "admin" || i.admin === "superadmin") admins.push(i.id);
     }
     return admins;
 };
@@ -55,33 +55,44 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Linux', 'Chrome', '121.0.6167.184']
+        browser: ['Linux', 'Chrome', '121.0.6167.184'],
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 0,
+        keepAliveIntervalMs: 10000,
+        generateHighQualityLinkPreview: true,
+        syncFullHistory: false,
+        markOnlineOnConnect: true
     });
 
     store.bind(sock.ev);
 
+    // --- PAIRING CODE LOGIC ---
     if (!sock.authState.creds.registered) {
+        console.log("Mempersiapkan permintaan kode pairing...");
         const requestPairing = async () => {
+            if (sock.authState.creds.registered) return;
             try {
+                await new Promise(resolve => setTimeout(resolve, 10000));
                 let code = await sock.requestPairingCode(pairingNumber);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log("=================================");
-                console.log("KODE PAIRING ANDA (Update tiap 30 detik):", code);
+                console.log("KODE PAIRING ANDA:", code);
+                console.log("Update tiap 30 detik untuk keamanan");
                 console.log("=================================");
             } catch (err) {
-                console.log("Gagal mengambil kode pairing:", err.message);
+                console.log("Gagal mengambil kode pairing (Mencoba lagi...):", err.message);
             }
         };
 
-        // Permintaan pertama setelah 6 detik
-        setTimeout(requestPairing, 6000);
+        requestPairing();
 
-        // Permintaan berulang setiap 30 detik sesuai permintaan user
-        setInterval(async () => {
-            if (!sock.authState.creds.registered) {
+        const pairingInterval = setInterval(async () => {
+            if (sock.authState.creds.registered) {
+                clearInterval(pairingInterval);
+            } else {
                 await requestPairing();
             }
-        }, 30000);
+        }, 40000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -91,22 +102,49 @@ async function startBot() {
         if (connection === 'close') {
             let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
             if (reason === DisconnectReason.loggedOut) {
-                console.log(`Device Logged Out, hapus folder auth_info dan scan ulang.`);
+                fs.rmSync('./auth_info', { recursive: true, force: true });
+                startBot();
             } else {
-                console.log("Koneksi terputus, mencoba menyambung kembali...");
                 startBot();
             }
         } else if (connection === 'open') {
-            console.log('✅ Tersambung ke WhatsApp');
+            console.log('✅ BERHASIL TERHUBUNG KE WHATSAPP');
         }
     });
 
+    sock.ev.on('group-participants.update', async (anu) => {
+        try {
+            let metadata = await sock.groupMetadata(anu.id);
+            let participants = anu.participants;
+            for (let num of participants) {
+                if (anu.action == 'add') {
+                    sock.sendMessage(anu.id, { text: `Selamat datang @${num.split('@')[0]} di grup *${metadata.subject}*!`, mentions: [num] });
+                } else if (anu.action == 'remove') {
+                    sock.sendMessage(anu.id, { text: `Selamat jalan @${num.split('@')[0]}, beban grup berkurang satu.`, mentions: [num] });
+                }
+            }
+        } catch (err) { console.log(err); }
+    });
+
     let searchResults = {};
+    let antiDelete = {};
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             const m = messages[0];
-            if (!m.message || m.key.fromMe) return;
+            if (!m.message) return;
+
+            // Anti Delete
+            if (m.message.protocolMessage && m.message.protocolMessage.type === 0) {
+                const key = m.message.protocolMessage.key;
+                const msg = antiDelete[key.id];
+                if (msg) {
+                    await sock.sendMessage(key.remoteJid, { text: `*ANTI DELETE TERDETEKSI!*\n\n*Pengirim:* @${key.participant.split('@')[0]}\n*Pesan:* ${msg.body || 'Media/Lainnya'}`, mentions: [key.participant] });
+                }
+                return;
+            }
+
+            if (m.key.fromMe) return;
 
             const from = m.key.remoteJid;
             const type = Object.keys(m.message)[0];
@@ -114,6 +152,9 @@ async function startBot() {
             const pushName = m.pushName || "User";
 
             const body = (type === 'conversation') ? m.message.conversation : (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text : (type == 'imageMessage') ? m.message.imageMessage.caption : (type == 'videoMessage') ? m.message.videoMessage.caption : '';
+
+            antiDelete[m.key.id] = { body, sender };
+
             const prefix = /^[./!#?]|/i.test(body) ? body.match(/^[./!#?]|/i)[0] : '';
             const isCmd = body.startsWith(prefix);
             const command = isCmd ? body.slice(prefix.length).trim().split(/ +/).shift().toLowerCase() : '';
@@ -130,8 +171,8 @@ async function startBot() {
             const user = db[sender];
             if (user.banned && !isOwner) return;
 
-            const groupMetadata = isGroup ? await sock.groupMetadata(from) : '';
-            const participants = isGroup ? groupMetadata.participants : [];
+            const groupMetadata = isGroup ? await sock.groupMetadata(from).catch(() => ({})) : {};
+            const participants = isGroup ? groupMetadata.participants || [] : [];
             const groupAdmins = isGroup ? getGroupAdmins(participants) : [];
             const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
             const isBotAdmins = groupAdmins.includes(botNumber) || false;
@@ -139,26 +180,38 @@ async function startBot() {
 
             const reply = (teks) => sock.sendMessage(from, { text: teks }, { quoted: m });
 
-            // --- FITUR AGRESIF ---
+            // Anti Link
             if (isGroup && isBotAdmins && !isAdmins && (body.includes('chat.whatsapp.com/') || body.includes('wa.me/'))) {
                 await sock.sendMessage(from, { delete: m.key });
                 await sock.groupParticipantsUpdate(from, [sender], 'remove');
                 return reply('Link terdeteksi! Kamu dikeluarkan.');
             }
 
+            // Paging Selection
             if (!isCmd && /^\d+$/.test(body) && searchResults[from] && searchResults[from].sender === sender) {
-                const index = parseInt(body) - 1;
+                const choice = parseInt(body);
                 const results = searchResults[from].results;
-                if (index >= 0 && index < results.length) {
-                    const selected = results[index];
-                    reply(`Sedang mendownload: *${selected.title}*\nMohon tunggu...`);
+
+                if (choice >= 1 && choice <= 5) {
+                    const selected = results[choice - 1];
+                    if (!selected) return reply('Pilihan tidak valid.');
+                    reply(`Mengunduh Audio: *${selected.title}*...`);
                     try {
                         const audioPath = await downloadAudio(selected.url);
                         await sock.sendMessage(from, { audio: { url: audioPath }, mimetype: 'audio/mp4', fileName: `${selected.title}.mp3` }, { quoted: m });
                         fs.unlinkSync(audioPath);
-                        delete searchResults[from];
+                    } catch (e) { reply(`Gagal: ${e.message}`); }
+                } else if (choice >= 6 && choice <= 10) {
+                    const selected = results[choice - 6];
+                    if (!selected) return reply('Pilihan tidak valid.');
+                    reply(`Mengunduh Video: *${selected.title}*...`);
+                    try {
+                        const videoPath = await downloadVideo(selected.url);
+                        await sock.sendMessage(from, { video: { url: videoPath }, caption: selected.title }, { quoted: m });
+                        fs.unlinkSync(videoPath);
                     } catch (e) { reply(`Gagal: ${e.message}`); }
                 }
+                delete searchResults[from];
                 return;
             }
 
@@ -173,19 +226,14 @@ async function startBot() {
 > .ytmp4 <link>
 > .tiktok <link>
 > .igdl <link>
-> .fbdl <link>
 
-*GROUP MENU* (Admin Only)
+*GROUP MENU*
 > .kick, .promote, .demote
 > .hidetag, .tagall, .group open/close
-> .setname, .setdesc, .setpp
-> .revoke, .linkgroup
+> .linkgroup, .setpp, .revoke
 
 *AI MENU*
 > .ai <pertanyaan>
-
-*OWNER MENU*
-> .ban, .unban, .setppbot
 
 *MISC*
 > .ping, .misi, .khodam, .me
@@ -193,26 +241,46 @@ async function startBot() {
                     reply(menuTeks);
                     break;
 
-                // --- AI ---
+                case 'play':
+                    if (!text) return reply('Judul?');
+                    const search = await yts(text);
+                    const results = search.videos.slice(0, 5);
+                    if (results.length === 0) return reply('Kosong.');
+                    let teksP = `*HASIL PENCARIAN*\n\n`;
+                    results.forEach((v, i) => { teksP += `*${i + 1}.* ${v.title} (${v.timestamp})\n`; });
+                    teksP += `\n*PILIH NOMOR:*\n- 1 s/d 5 untuk *AUDIO*\n- 6 s/d 10 untuk *VIDEO*`;
+                    searchResults[from] = { sender, results };
+                    reply(teksP);
+                    break;
+
+                case 'ytmp3':
+                case 'ytmp4':
+                case 'tiktok':
+                case 'igdl':
+                    if (!text) return reply('Link?');
+                    try {
+                        reply('Proses...');
+                        const mediaPath = (command === 'ytmp3') ? await downloadAudio(text) : await downloadVideo(text);
+                        const mediaType = (command === 'ytmp3') ? { audio: { url: mediaPath }, mimetype: 'audio/mp4' } : { video: { url: mediaPath } };
+                        await sock.sendMessage(from, mediaType, { quoted: m });
+                        fs.unlinkSync(mediaPath);
+                    } catch (e) { reply(`Error: ${e.message}`); }
+                    break;
+
                 case 'ai':
-                    if (!text) return reply('Mau tanya apa?');
+                    if (!text) return reply('Tanya?');
                     try {
                         const res = await axios.get(`https://api.vreden.web.id/api/gpt?query=${encodeURIComponent(text)}`);
                         reply(res.data.result);
-                    } catch {
-                        reply('Maaf, AI sedang sibuk.');
-                    }
+                    } catch { reply('AI error.'); }
                     break;
 
-                // --- GROUP ---
-                case 'kick':
-                case 'promote':
-                case 'demote':
-                    if (!isGroup || !isAdmins || !isBotAdmins) return reply('Hanya admin!');
-                    let target = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
-                    if (target.length === 0) return reply('Tag orangnya!');
-                    await sock.groupParticipantsUpdate(from, target, command);
-                    reply(`Berhasil ${command}.`);
+                case 'ping':
+                    reply('Pong! 🏓');
+                    break;
+
+                case 'me':
+                    reply(`*PROFIL*\n\n> Nama: ${user.nama}\n> Koin: ${user.coin}\n> Limit: ${user.limit}`);
                     break;
 
                 case 'hidetag':
@@ -226,66 +294,52 @@ async function startBot() {
                     sock.sendMessage(from, { text: tAll, mentions: participants.map(v => v.id) });
                     break;
 
+                case 'kick':
+                case 'promote':
+                case 'demote':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return;
+                    let target = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
+                    await sock.groupParticipantsUpdate(from, target, command);
+                    break;
+
                 case 'group':
                     if (!isGroup || !isAdmins || !isBotAdmins) return;
                     await sock.groupSettingUpdate(from, args[0] === 'open' ? 'not_announcement' : 'announcement');
-                    reply(`Grup telah ${args[0] === 'open' ? 'dibuka' : 'ditutup'}.`);
+                    reply(`Grup ${args[0]}.`);
                     break;
 
                 case 'linkgroup':
                     if (!isGroup || !isBotAdmins) return;
-                    const code = await sock.groupInviteCode(from);
-                    reply(`https://chat.whatsapp.com/${code}`);
+                    reply(`https://chat.whatsapp.com/${await sock.groupInviteCode(from)}`);
                     break;
 
-                // --- DOWNLOADER ---
-                case 'play':
-                    if (!text) return reply('Cari apa?');
-                    const search = await yts(text);
-                    const results = search.videos.slice(0, 5);
-                    let teksP = `*HASIL PENCARIAN*\n\n` + results.map((v, i) => `*${i + 1}.* ${v.title} (${v.timestamp})`).join('\n') + `\n\nBalas dengan nomor untuk audio.`;
-                    searchResults[from] = { sender, results };
-                    reply(teksP);
+                case 'revoke':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return;
+                    await sock.groupRevokeInvite(from);
+                    reply('Link reset.');
                     break;
 
-                case 'ytmp3':
-                case 'ytmp4':
-                case 'tiktok':
-                case 'igdl':
-                case 'fbdl':
-                    if (!text) return reply('Mana link-nya?');
-                    try {
-                        reply('Sedang diproses...');
-                        const mediaPath = (command === 'ytmp3') ? await downloadAudio(text) : await downloadVideo(text);
-                        const isAudio = command === 'ytmp3';
-                        await sock.sendMessage(from, isAudio ? { audio: { url: mediaPath }, mimetype: 'audio/mp4' } : { video: { url: mediaPath } }, { quoted: m });
-                        fs.unlinkSync(mediaPath);
-                    } catch (e) { reply(`Error: ${e.message}`); }
-                    break;
-
-                // --- MISC ---
-                case 'me':
-                    reply(`*PROFIL KAMU*\n\n> Nama: ${user.nama}\n> Koin: ${user.coin}\n> Limit: ${user.limit}\n> Level: ${user.level}`);
-                    break;
-
-                case 'khodam':
-                    if (!text) return reply('Namamu siapa?');
-                    const k = ['Macan Sakti', 'Kucing Oren', 'Naga Hitam', 'Cacing Tanah', 'Tikus Got', 'Singa Putih', 'Jin Qorin', 'Pocong Racing', 'Kuntilanak Merah'];
-                    reply(`Khodam *${text}* adalah: ${k[Math.floor(Math.random() * k.length)]}`);
-                    break;
-
-                case 'ping':
-                    reply('Pong! 🏓');
+                case 'setpp':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return;
+                    if (type === 'imageMessage' || m.message.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage) {
+                        let media = await downloadMediaMessage(m, 'buffer', {}, { logger: pino() });
+                        await sock.updateProfilePicture(from, media);
+                        reply('Update PP.');
+                    }
                     break;
 
                 case 'misi':
                     const n = Date.now();
-                    if (n - user.lastMisi < 86400000) return reply('Besok lagi ya.');
-                    user.coin += 100;
-                    user.limit = 25;
-                    user.lastMisi = n;
+                    if (n - user.lastMisi < 86400000) return reply('Besok.');
+                    user.coin += 100; user.limit = 25; user.lastMisi = n;
                     saveDB();
-                    reply('Berhasil! +100 koin & Reset Limit.');
+                    reply('Sukses!');
+                    break;
+
+                case 'khodam':
+                    if (!text) return reply('Nama?');
+                    const k = ['Macan Sakti', 'Kucing Oren', 'Naga Hitam', 'Cacing Tanah', 'Tikus Got', 'Singa Putih', 'Jin Qorin'];
+                    reply(`Khodam *${text}*: ${k[Math.floor(Math.random() * k.length)]}`);
                     break;
             }
         } catch (err) { console.log(err); }
