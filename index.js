@@ -17,7 +17,7 @@ const { spawn } = require('child_process');
 const yts = require('yt-search');
 const { downloadAudio, downloadVideo } = require('./lib/ytdlp');
 
-// --- KONFIGURASI (Gunakan Env jika ada) ---
+// --- KONFIGURASI ---
 const owner = process.env.OWNER_NUMBER || "6283894587604@s.whatsapp.net";
 const pairingNumber = (process.env.BOT_NUMBER || "6283894587604").replace(/[^0-9]/g, '');
 
@@ -54,7 +54,7 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ["Mac OS", "Chrome", "121.0.6167.184"],
+        browser: ["Ubuntu", "Chrome", "20.0.04"],
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 0,
         keepAliveIntervalMs: 10000,
@@ -69,31 +69,18 @@ async function startBot() {
 
     // --- PAIRING CODE LOGIC ---
     if (!sock.authState.creds.registered) {
-        let isAskingCode = false;
-        const requestPairing = async () => {
-            if (isAskingCode || sock.authState.creds.registered) return;
-            isAskingCode = true;
+        console.log(`\n[!] MENCARI KODE PAIRING UNTUK NOMOR: ${pairingNumber}`);
+        setTimeout(async () => {
             try {
                 let code = await sock.requestPairingCode(pairingNumber);
                 code = code?.match(/.{1,4}/g)?.join("-") || code;
                 console.log("\n=================================");
                 console.log("KODE PAIRING ANDA:", code);
-                console.log("Masukkan kode ini di menu 'Perangkat Tertaut' WA");
                 console.log("=================================\n");
             } catch (err) {
-                console.log("Gagal pairing:", err.message);
-            } finally {
-                isAskingCode = false;
+                console.log("Gagal mengambil kode pairing:", err.message);
             }
-        };
-
-        setTimeout(() => {
-            if (!sock.authState.creds.registered) requestPairing();
-        }, 5000);
-
-        setInterval(async () => {
-            if (!sock.authState.creds.registered) await requestPairing();
-        }, 120000);
+        }, 10000);
     }
 
     sock.ev.on('creds.update', saveCreds);
@@ -106,22 +93,20 @@ async function startBot() {
                 fs.rmSync('./auth_info', { recursive: true, force: true });
                 startBot();
             } else {
-                setTimeout(() => startBot(), 5000);
+                startBot();
             }
         } else if (connection === 'open') {
-            console.log('✅ BOT TERHUBUNG');
+            console.log('✅ BOT ONLINE');
         }
     });
 
-    // --- AUTO WELCOME & ANTI-DELETE ---
+    // --- GROUP UPDATE ---
     sock.ev.on('group-participants.update', async (anu) => {
         try {
             let metadata = await sock.groupMetadata(anu.id);
             for (let num of anu.participants) {
                 if (anu.action == 'add') {
-                    sock.sendMessage(anu.id, { text: `Halo @${num.split('@')[0]}! Selamat datang di grup *${metadata.subject}*!`, mentions: [num] });
-                } else if (anu.action == 'remove') {
-                    sock.sendMessage(anu.id, { text: `Selamat jalan @${num.split('@')[0]}, beban grup berkurang satu.`, mentions: [num] });
+                    sock.sendMessage(anu.id, { text: `Selamat datang @${num.split('@')[0]}!`, mentions: [num] });
                 }
             }
         } catch {}
@@ -140,18 +125,15 @@ async function startBot() {
                 const key = m.message.protocolMessage.key;
                 const msg = antiDelete[key.id];
                 if (msg) {
-                    await sock.sendMessage(key.remoteJid, { text: `*ANTI DELETE*\n\n@${key.participant.split('@')[0]} menghapus pesan:\n\n${msg.body || 'Media'}`, mentions: [key.participant] });
+                    await sock.sendMessage(key.remoteJid, { text: `*ANTI DELETE*\n@${key.participant.split('@')[0]} menghapus: ${msg.body}`, mentions: [key.participant] });
                 }
                 return;
             }
 
             if (m.key.fromMe) return;
-
             const from = m.key.remoteJid;
             const type = Object.keys(m.message)[0];
             const sender = m.key.participant || m.key.remoteJid;
-            const pushName = m.pushName || "User";
-
             const body = (type === 'conversation') ? m.message.conversation : (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text : (type == 'imageMessage') ? m.message.imageMessage.caption : (type == 'videoMessage') ? m.message.videoMessage.caption : '';
 
             antiDelete[m.key.id] = { body, sender };
@@ -166,7 +148,7 @@ async function startBot() {
             const isOwner = sender === owner;
 
             if (!db[sender]) {
-                db[sender] = { nama: pushName, coin: 100, limit: 25, lastMisi: 0 };
+                db[sender] = { nama: m.pushName || "User", coin: 100, limit: 25 };
                 saveDB();
             }
             const user = db[sender];
@@ -187,19 +169,19 @@ async function startBot() {
                 return reply('Link terdeteksi! Kamu dikeluarkan.');
             }
 
-            // Selection Selection
+            // Selection Logic
             if (!isCmd && /^\d+$/.test(body) && searchResults[from] && searchResults[from].sender === sender) {
-                const choice = parseInt(body);
-                const results = searchResults[from].results;
-                if (choice >= 1 && choice <= 5) {
-                    const sel = results[choice - 1];
+                const num = parseInt(body);
+                const res = searchResults[from].results;
+                if (num >= 1 && num <= 5) {
+                    const sel = res[num - 1];
                     if (!sel) return;
                     reply(`Mendownload: ${sel.title}`);
                     const path = await downloadAudio(sel.url);
                     await sock.sendMessage(from, { audio: { url: path }, mimetype: 'audio/mp4' }, { quoted: m });
                     fs.unlinkSync(path);
-                } else if (choice >= 6 && choice <= 10) {
-                    const sel = results[choice - 6];
+                } else if (num >= 6 && num <= 10) {
+                    const sel = res[num - 6];
                     if (!sel) return;
                     reply(`Mendownload Video: ${sel.title}`);
                     const path = await downloadVideo(sel.url);
@@ -213,13 +195,14 @@ async function startBot() {
             switch (command) {
                 case 'menu':
                 case 'help':
-                    reply(`Halo *${pushName}*! 🤖
+                    reply(`Halo *${m.pushName}*! 🤖
 
 *DOWNLOADER*
 > .play <judul>
 > .ytmp3 <link>
 > .ytmp4 <link>
 > .tiktok <link>
+> .igdl <link>
 
 *GROUP MENU*
 > .kick, .promote, .demote
@@ -236,22 +219,23 @@ async function startBot() {
 
                 case 'play':
                     if (!text) return reply('Judul?');
-                    const search = await yts(text);
-                    const results = search.videos.slice(0, 5);
-                    let teksP = `*HASIL PENCARIAN*\n\n` + results.map((v, i) => `*${i + 1}.* ${v.title}`).join('\n') + `\n\n1-5: Audio\n6-10: Video`;
+                    const s = await yts(text);
+                    const results = s.videos.slice(0, 5);
+                    let teks = `*HASIL PENCARIAN*\n\n` + results.map((v, i) => `*${i + 1}.* ${v.title}`).join('\n') + `\n\n1-5: Audio\n6-10: Video`;
                     searchResults[from] = { sender, results };
-                    reply(teksP);
+                    reply(teks);
                     break;
 
                 case 'ytmp3':
                 case 'ytmp4':
                 case 'tiktok':
+                case 'igdl':
                     if (!text) return reply('Link?');
                     try {
                         reply('Proses...');
-                        const media = (command === 'ytmp3') ? await downloadAudio(text) : await downloadVideo(text);
-                        await sock.sendMessage(from, (command === 'ytmp3') ? { audio: { url: media }, mimetype: 'audio/mp4' } : { video: { url: media } }, { quoted: m });
-                        fs.unlinkSync(media);
+                        const path = (command === 'ytmp3') ? await downloadAudio(text) : await downloadVideo(text);
+                        await sock.sendMessage(from, (command === 'ytmp3') ? { audio: { url: path }, mimetype: 'audio/mp4' } : { video: { url: path } }, { quoted: m });
+                        fs.unlinkSync(path);
                     } catch (e) { reply(`Gagal: ${e.message}`); }
                     break;
 
@@ -280,7 +264,6 @@ async function startBot() {
                     if (!isGroup || !isAdmins || !isBotAdmins) return;
                     let t = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
                     await sock.groupParticipantsUpdate(from, t, command);
-                    reply(`Berhasil ${command}.`);
                     break;
 
                 case 'group':
@@ -309,7 +292,7 @@ async function startBot() {
                     if (n - user.lastMisi < 86400000) return reply('Besok.');
                     user.coin += 100; user.lastMisi = n;
                     saveDB();
-                    reply('Sukses! +100 koin.');
+                    reply('Sukses!');
                     break;
 
                 case 'khodam':
