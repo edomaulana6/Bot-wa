@@ -2,15 +2,25 @@ const {
     default: makeWASocket,
     useMultiFileAuthState,
     DisconnectReason,
-    fetchLatestBaileysVersion
+    fetchLatestBaileysVersion,
+    makeInMemoryStore,
+    proto,
+    downloadMediaMessage
 } = require("@whiskeysockets/baileys");
 
 const pino = require('pino');
+const { Boom } = require('@hapi/boom');
 const fs = require('fs');
 const axios = require('axios');
 const http = require('http');
+const path = require('path');
+const { exec } = require('child_process');
 const yts = require('yt-search');
-const ytdl = require('ytdl-core');
+const { downloadAudio, downloadVideo } = require('./lib/ytdlp');
+
+// --- KONFIGURASI ---
+const owner = "6283894587604@s.whatsapp.net";
+const pairingNumber = "6283894587604";
 
 // --- KEEP ALIVE SERVER ---
 http.createServer((req, res) => {
@@ -26,7 +36,16 @@ function saveDB() {
     fs.writeFileSync('./database.json', JSON.stringify(db, null, 2));
 }
 
-// --- START BOT ---
+const store = makeInMemoryStore({ logger: pino().child({ level: 'silent', stream: 'store' }) });
+
+const getGroupAdmins = (participants) => {
+    let admins = [];
+    for (let i of participants) {
+        i.admin === "admin" || i.admin === "superadmin" ? admins.push(i.id) : "";
+    }
+    return admins;
+};
+
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('./auth_info');
     const { version } = await fetchLatestBaileysVersion();
@@ -36,246 +55,222 @@ async function startBot() {
         logger: pino({ level: 'silent' }),
         printQRInTerminal: false,
         auth: state,
-        browser: ['Ubuntu', 'Chrome', '20.0']
+        browser: ['Linux', 'Chrome', '121.0.6167.184']
     });
 
-    // --- PAIRING ---
+    store.bind(sock.ev);
+
     if (!sock.authState.creds.registered) {
-        const phoneNumber = "6283894587604";
-        const generateCode = async () => {
-            try {
-                let code = await sock.requestPairingCode(phoneNumber);
-                code = code?.match(/.{1,4}/g)?.join("-");
-                console.log("=================================");
-                console.log("PAIRING CODE:", code);
-                console.log("=================================");
-            } catch (err) {
-                console.log("Pairing gagal:", err);
-            }
-        };
-        setTimeout(generateCode, 3000);
-        const interval = setInterval(async () => {
-            if (sock.authState.creds.registered) {
-                clearInterval(interval);
-            } else {
-                await generateCode();
-            }
-        }, 30000);
+        setTimeout(async () => {
+            let code = await sock.requestPairingCode(pairingNumber);
+            code = code?.match(/.{1,4}/g)?.join("-") || code;
+            console.log("=================================");
+            console.log("KODE PAIRING ANDA:", code);
+            console.log("=================================");
+        }, 3000);
     }
 
     sock.ev.on('creds.update', saveCreds);
 
-    // --- CONNECTION ---
-    sock.ev.on('connection.update', (update) => {
+    sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                console.log("Reconnect...");
-                setTimeout(() => startBot(), 3000);
-            }
+            let reason = new Boom(lastDisconnect?.error)?.output.statusCode;
+            if (reason === DisconnectReason.loggedOut) { console.log(`Device Logged Out`); }
+            else { startBot(); }
+        } else if (connection === 'open') {
+            console.log('✅ Tersambung ke WhatsApp');
         }
-        if (connection === 'open') console.log("✅ Bot connected");
     });
 
-    // --- MESSAGE HANDLER ---
+    let searchResults = {};
+
     sock.ev.on('messages.upsert', async ({ messages }) => {
         try {
             const m = messages[0];
             if (!m.message || m.key.fromMe) return;
 
             const from = m.key.remoteJid;
-            const sender = m.key.participant || from;
             const type = Object.keys(m.message)[0];
+            const sender = m.key.participant || m.key.remoteJid;
             const pushName = m.pushName || "User";
 
-            const body =
-                type === 'conversation' ? m.message.conversation :
-                type === 'extendedTextMessage' ? m.message.extendedTextMessage.text :
-                type === 'imageMessage' ? m.message.imageMessage.caption :
-                type === 'videoMessage' ? m.message.videoMessage.caption : '';
-
-            // --- LOGIKA TANPA TITIK ---
-            const command = body.trim().split(/ +/)[0].toLowerCase();
+            const body = (type === 'conversation') ? m.message.conversation : (type === 'extendedTextMessage') ? m.message.extendedTextMessage.text : (type == 'imageMessage') ? m.message.imageMessage.caption : (type == 'videoMessage') ? m.message.videoMessage.caption : '';
+            const prefix = /^[./!#?]|/i.test(body) ? body.match(/^[./!#?]|/i)[0] : '';
+            const isCmd = body.startsWith(prefix);
+            const command = isCmd ? body.slice(prefix.length).trim().split(/ +/).shift().toLowerCase() : '';
             const args = body.trim().split(/ +/).slice(1);
             const text = args.join(" ");
 
             const isGroup = from.endsWith('@g.us');
-            const owner = "6283894587604@s.whatsapp.net";
             const isOwner = sender === owner;
 
-            // --- USER DB ---
             if (!db[sender]) {
-                db[sender] = { nama: pushName, level: 1, coin: 0, limit: 25, lastMisi: 0, banned: false, isVip: false };
+                db[sender] = { nama: pushName, level: 1, coin: 100, limit: 25, lastMisi: 0, banned: false, isVip: false };
                 saveDB();
             }
             const user = db[sender];
             if (user.banned && !isOwner) return;
 
-            // --- GROUP METADATA ---
-            let groupMetadata = isGroup ? await sock.groupMetadata(from).catch(() => null) : null;
-            let participants = isGroup ? groupMetadata?.participants || [] : [];
-            let admins = isGroup ? participants.filter(p => p.admin).map(p => p.id) : [];
+            const groupMetadata = isGroup ? await sock.groupMetadata(from) : '';
+            const participants = isGroup ? groupMetadata.participants : [];
+            const groupAdmins = isGroup ? getGroupAdmins(participants) : [];
             const botNumber = sock.user.id.split(':')[0] + '@s.whatsapp.net';
-            const isAdmin = admins.includes(sender) || isOwner;
-            const isBotAdmin = admins.includes(botNumber);
-
-            // --- ANTI LINK ---
-            if (isGroup && body.includes('chat.whatsapp.com/') && !isAdmin && isBotAdmin && !isOwner) {
-                await sock.sendMessage(from, { delete: m.key });
-                await sock.groupParticipantsUpdate(from, [sender], "remove");
-                return;
-            }
+            const isBotAdmins = groupAdmins.includes(botNumber) || false;
+            const isAdmins = groupAdmins.includes(sender) || isOwner || false;
 
             const reply = (teks) => sock.sendMessage(from, { text: teks }, { quoted: m });
 
-            // --- COMMAND SWITCH ---
-            switch (command) {
+            // --- FITUR AGRESIF ---
+            if (isGroup && isBotAdmins && !isAdmins && (body.includes('chat.whatsapp.com/') || body.includes('wa.me/'))) {
+                await sock.sendMessage(from, { delete: m.key });
+                await sock.groupParticipantsUpdate(from, [sender], 'remove');
+                return reply('Link terdeteksi! Kamu dikeluarkan.');
+            }
 
+            if (!isCmd && /^\d+$/.test(body) && searchResults[from] && searchResults[from].sender === sender) {
+                const index = parseInt(body) - 1;
+                const results = searchResults[from].results;
+                if (index >= 0 && index < results.length) {
+                    const selected = results[index];
+                    reply(`Sedang mendownload: *${selected.title}*\nMohon tunggu...`);
+                    try {
+                        const audioPath = await downloadAudio(selected.url);
+                        await sock.sendMessage(from, { audio: { url: audioPath }, mimetype: 'audio/mp4', fileName: `${selected.title}.mp3` }, { quoted: m });
+                        fs.unlinkSync(audioPath);
+                        delete searchResults[from];
+                    } catch (e) { reply(`Gagal: ${e.message}`); }
+                }
+                return;
+            }
+
+            switch (command) {
                 case 'menu':
                 case 'help':
-                    reply(`Halo *${user.nama}* 🤖
+                    let menuTeks = `Halo *${pushName}*! 🤖
 
 *DOWNLOADER*
-1. play (judul lagu)
-2. ytmp4 (link youtube video)
-3. ytmp3 (link youtube audio)
-4. tt (link tiktok)
-5. ig (link instagram)
-6. git (link github repo)
-7. mediafire (link download)
+> .play <judul>
+> .ytmp3 <link>
+> .ytmp4 <link>
+> .tiktok <link>
+> .igdl <link>
+> .fbdl <link>
 
-*TOOLS & UTILS*
-8. ping (cek speed)
-9. kalkulator (angka)
-10. ssweb (link web)
-11. cuaca (nama kota)
-12. info (statistik bot)
-13. me (profil kamu)
-14. owner (kontak dev)
-15. hidetag (teks)
-16. tagall (panggil semua)
+*GROUP MENU* (Admin Only)
+> .kick, .promote, .demote
+> .hidetag, .tagall, .group open/close
+> .setname, .setdesc, .setpp
+> .revoke, .linkgroup
 
-*HIBURAN & GAME*
-17. mancing (cari ikan)
-18. misi (claim harian)
-19. khodam (nama kamu)
-20. apakah (pertanyaan)
-21. bisakah (pertanyaan)
-22. rate (seberapa besar)
-23. tebakangka (game)
-24. suit (batu/gunting/kertas)
-25. bot (sapaan bot)`);
+*AI MENU*
+> .ai <pertanyaan>
+
+*OWNER MENU*
+> .ban, .unban, .setppbot
+
+*MISC*
+> .ping, .misi, .khodam, .me
+`;
+                    reply(menuTeks);
                     break;
 
-                // --- DOWNLOADER (YT-DL INTEGRATED) ---
-                case 'play':
-                case 'ytmp3':
-                    if (!text) return reply('Masukkan judul lagu atau link YouTube!');
+                // --- AI ---
+                case 'ai':
+                    if (!text) return reply('Mau tanya apa?');
                     try {
-                        reply('Sabar ya, lagi diproses...');
-                        const search = await yts(text);
-                        const video = search.videos[0];
-                        if (!video) return reply('Lagu tidak ditemukan.');
-
-                        const stream = ytdl(video.url, { filter: 'audioonly', quality: 'highestaudio' });
-                        await sock.sendMessage(from, { 
-                            audio: { stream: stream }, 
-                            mimetype: 'audio/mp4',
-                            fileName: `${video.title}.mp3`
-                        }, { quoted: m });
-                    } catch (e) { reply('Gagal memutar lagu. Coba lagi nanti.'); }
+                        const res = await axios.get(`https://api.vreden.web.id/api/gpt?query=${encodeURIComponent(text)}`);
+                        reply(res.data.result);
+                    } catch {
+                        reply('Maaf, AI sedang sibuk.');
+                    }
                     break;
 
-                case 'ytmp4':
-                    if (!text) return reply('Masukkan link YouTube!');
-                    try {
-                        reply('Lagi download videonya...');
-                        const stream = ytdl(text, { filter: 'formatany', quality: 'highest' });
-                        await sock.sendMessage(from, { video: { stream: stream }, caption: 'Nih videonya' }, { quoted: m });
-                    } catch (e) { reply('Gagal download video YouTube.'); }
-                    break;
-
-                case 'tt':
-                    if (!args[0]) return reply('Mana link TikToknya?');
-                    try {
-                        const res = await axios.get(`https://api.tiklydown.eu.org/api/download?url=${args[0]}`);
-                        await sock.sendMessage(from, { video: { url: res.data.video.noWatermark }, caption: 'Nih videonya' }, { quoted: m });
-                    } catch { reply('Gagal download TikTok.'); }
-                    break;
-
-                case 'ig':
-                    if (!args[0]) return reply('Mana link Instagram?');
-                    try {
-                        const res = await axios.get(`https://api.vreden.web.id/api/igdl?url=${args[0]}`);
-                        await sock.sendMessage(from, { video: { url: res.data.result[0].url } }, { quoted: m });
-                    } catch { reply('Error download IG.'); }
-                    break;
-
-                // --- TOOLS ---
-                case 'ping':
-                    reply(`Pong! Respon speed: ${Date.now() - m.messageTimestamp * 1000}ms`);
-                    break;
-
-                case 'kalkulator':
-                    if (!text) return reply('Contoh: kalkulator 10*5');
-                    try { reply(`Hasil: ${eval(text.replace(/[^0-9+\-*/().]/g, ''))}`); } catch { reply('Rumus salah.'); }
+                // --- GROUP ---
+                case 'kick':
+                case 'promote':
+                case 'demote':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return reply('Hanya admin!');
+                    let target = m.message.extendedTextMessage?.contextInfo?.mentionedJid || (args[0] ? [args[0].replace('@', '') + '@s.whatsapp.net'] : []);
+                    if (target.length === 0) return reply('Tag orangnya!');
+                    await sock.groupParticipantsUpdate(from, target, command);
+                    reply(`Berhasil ${command}.`);
                     break;
 
                 case 'hidetag':
-                    if (!isGroup || !isAdmin) return;
-                    sock.sendMessage(from, { text: text ? text : '', mentions: participants.map(v => v.id) });
+                    if (!isGroup || !isAdmins) return;
+                    sock.sendMessage(from, { text: text || '', mentions: participants.map(v => v.id) });
                     break;
 
-                case 'ssweb':
-                    if (!args[0]) return reply('Linknya mana?');
-                    await sock.sendMessage(from, { image: { url: `https://api.vreden.web.id/api/ssweb?url=${args[0]}` } }, { quoted: m });
+                case 'tagall':
+                    if (!isGroup || !isAdmins) return;
+                    let tAll = `*TAG ALL*\n\n${text}\n\n` + participants.map(v => ` @${v.id.split('@')[0]}`).join('\n');
+                    sock.sendMessage(from, { text: tAll, mentions: participants.map(v => v.id) });
                     break;
 
-                // --- GAME & HIBURAN ---
-                case 'mancing':
-                    if (user.limit <= 0) return reply('Limit habis!');
-                    user.limit -= 1;
-                    const ikan = ['Nila', 'Lele', 'Emas', 'Sandat', 'Hiu'];
-                    const hasil = ikan[Math.floor(Math.random() * ikan.length)];
-                    user.coin += 50;
-                    saveDB();
-                    reply(`Dapat: ${hasil}\nSisa limit: ${user.limit}`);
+                case 'group':
+                    if (!isGroup || !isAdmins || !isBotAdmins) return;
+                    await sock.groupSettingUpdate(from, args[0] === 'open' ? 'not_announcement' : 'announcement');
+                    reply(`Grup telah ${args[0] === 'open' ? 'dibuka' : 'ditutup'}.`);
                     break;
 
-                case 'misi':
-                    const now = Date.now();
-                    if (now - user.lastMisi < 86400000) return reply('Sudah claim hari ini.');
-                    user.coin += 500;
-                    user.limit = 25;
-                    user.lastMisi = now;
-                    saveDB();
-                    reply('Berhasil claim +500 coin & reset limit!');
+                case 'linkgroup':
+                    if (!isGroup || !isBotAdmins) return;
+                    const code = await sock.groupInviteCode(from);
+                    reply(`https://chat.whatsapp.com/${code}`);
+                    break;
+
+                // --- DOWNLOADER ---
+                case 'play':
+                    if (!text) return reply('Cari apa?');
+                    const search = await yts(text);
+                    const results = search.videos.slice(0, 5);
+                    let teksP = `*HASIL PENCARIAN*\n\n` + results.map((v, i) => `*${i + 1}.* ${v.title} (${v.timestamp})`).join('\n') + `\n\nBalas dengan nomor untuk audio.`;
+                    searchResults[from] = { sender, results };
+                    reply(teksP);
+                    break;
+
+                case 'ytmp3':
+                case 'ytmp4':
+                case 'tiktok':
+                case 'igdl':
+                case 'fbdl':
+                    if (!text) return reply('Mana link-nya?');
+                    try {
+                        reply('Sedang diproses...');
+                        const mediaPath = (command === 'ytmp3') ? await downloadAudio(text) : await downloadVideo(text);
+                        const isAudio = command === 'ytmp3';
+                        await sock.sendMessage(from, isAudio ? { audio: { url: mediaPath }, mimetype: 'audio/mp4' } : { video: { url: mediaPath } }, { quoted: m });
+                        fs.unlinkSync(mediaPath);
+                    } catch (e) { reply(`Error: ${e.message}`); }
+                    break;
+
+                // --- MISC ---
+                case 'me':
+                    reply(`*PROFIL KAMU*\n\n> Nama: ${user.nama}\n> Koin: ${user.coin}\n> Limit: ${user.limit}\n> Level: ${user.level}`);
                     break;
 
                 case 'khodam':
                     if (!text) return reply('Namamu siapa?');
-                    const kd = ['Macan Putih', 'Ular Kadut', 'Tutup Panci', 'Singa Depok', 'Jin Tomang'];
-                    reply(`Khodam *${text}* adalah: ${kd[Math.floor(Math.random() * kd.length)]}`);
+                    const k = ['Macan Sakti', 'Kucing Oren', 'Naga Hitam', 'Cacing Tanah', 'Tikus Got', 'Singa Putih', 'Jin Qorin', 'Pocong Racing', 'Kuntilanak Merah'];
+                    reply(`Khodam *${text}* adalah: ${k[Math.floor(Math.random() * k.length)]}`);
                     break;
 
-                case 'apakah':
-                    const jaw = ['Iya', 'Tidak', 'Mungkin', 'Gak tau'];
-                    reply(`Pertanyaan: ${text}\nJawaban: *${jaw[Math.floor(Math.random() * jaw.length)]}*`);
+                case 'ping':
+                    reply('Pong! 🏓');
                     break;
 
-                case 'owner':
-                    reply(`Owner: wa.me/6283894587604`);
-                    break;
-
-                case 'bot':
-                    reply('Halo kak! Ada yang bisa dibantu? Ketik *menu* ya.');
+                case 'misi':
+                    const n = Date.now();
+                    if (n - user.lastMisi < 86400000) return reply('Besok lagi ya.');
+                    user.coin += 100;
+                    user.limit = 25;
+                    user.lastMisi = n;
+                    saveDB();
+                    reply('Berhasil! +100 koin & Reset Limit.');
                     break;
             }
-
-        } catch (err) {
-            console.log("ERROR:", err);
-        }
+        } catch (err) { console.log(err); }
     });
 }
 
