@@ -491,4 +491,213 @@ async function cmdTicTacMove(sock, jid, sender, num) {
   const g = duel[jid];
   if (!g || g.player!==sender) return;
   const idx = num - 1;
-  if (g.board[idx]!==0) return sock.sendMes
+  if (g.board[idx]!==0) return sock.sendMessage(jid, { text:"⚠️ Posisi sudah terisi! Pilih lain." });
+
+  g.board[idx] = 1;
+  if (checkWinner(g.board,1)) {
+    delete duel[jid];
+    if (!tebakSkor[jid]) tebakSkor[jid]={};
+    tebakSkor[jid][sender]=(tebakSkor[jid][sender]||0)+30;
+    return sock.sendMessage(jid, {
+      text:`${renderBoard(g.board)}\n\n🎉 *Kamu MENANG!* +30 poin`,
+    });
+  }
+  if (!g.board.includes(0)) {
+    delete duel[jid];
+    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤝 *SERI!*` });
+  }
+
+  // Giliran bot
+  const ai = aiMove(g.board);
+  g.board[ai] = 2;
+  if (checkWinner(g.board,2)) {
+    delete duel[jid];
+    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤖 *Bot MENANG!* Coba lagi \`${CONFIG.PREFIX}tictac\`` });
+  }
+  if (!g.board.includes(0)) {
+    delete duel[jid];
+    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤝 *SERI!*` });
+  }
+
+  await sock.sendMessage(jid, {
+    text:`${renderBoard(g.board)}\n\nGiliran kamu! Pilih posisi (1-9):`,
+  });
+}
+
+// ─── Command: Skor ────────────────────────────────────────────
+async function cmdSkor(sock, jid, sender) {
+  const s = tebakSkor[jid];
+  if (!s || !Object.keys(s).length)
+    return sock.sendMessage(jid, { text:`🏆 Belum ada skor. Main \`${CONFIG.PREFIX}tebak\`, \`${CONFIG.PREFIX}hangman\`, atau \`${CONFIG.PREFIX}tictac\`!` });
+
+  const sorted = Object.entries(s).sort((a,b)=>b[1]-a[1]);
+  let msg = `🏆 *PAPAN SKOR*\n${"─".repeat(28)}\n\n`;
+  sorted.forEach(([num,pts],i)=>{
+    const medal = i===0?"🥇":i===1?"🥈":i===2?"🥉":"  ";
+    const tag   = num===sender?" ← kamu":"";
+    msg+=`${medal} ${num.split("@")[0]} — *${pts} poin*${tag}\n`;
+  });
+  await sock.sendMessage(jid, { text:msg });
+}
+
+// ─── Router Utama ─────────────────────────────────────────────
+async function handleMessage(sock, msg) {
+  if (!msg.message) return;
+
+  const jid    = msg.key.remoteJid;
+  const sender = msg.key.participant || msg.key.remoteJid;
+  const body   = (
+    msg.message?.conversation ||
+    msg.message?.extendedTextMessage?.text ||
+    msg.message?.imageMessage?.caption || ""
+  ).trim();
+
+  if (!body) return;
+
+  const P = CONFIG.PREFIX;
+
+  // ── Handler game tanpa prefix (jawaban tebak/hangman/tictac) ──
+  if (tebakNow[jid] && !body.startsWith(P)) {
+    return cmdTebakAnswer(sock, jid, sender, body);
+  }
+  if (hangman[jid] && !body.startsWith(P) && /^[a-zA-Z]$/.test(body)) {
+    return cmdHangmanGuess(sock, jid, sender, body);
+  }
+  if (duel[jid] && !body.startsWith(P) && /^[1-9]$/.test(body)) {
+    return cmdTicTacMove(sock, jid, sender, parseInt(body));
+  }
+
+  if (!body.startsWith(P)) return;
+
+  const [rawCmd, ...args] = body.slice(P.length).trim().split(/\s+/);
+  const cmd   = rawCmd.toLowerCase();
+  const query = args.join(" ");
+
+  console.log(`[CMD] ${sender} → ${P}${cmd} ${query}`);
+
+  switch(cmd) {
+    case "menu": case "help":
+      await sock.sendMessage(jid, { text: MENU }); break;
+
+    case "play": case "dl": case "download":
+      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}play <judul>\`` });
+      await cmdPlay(sock, jid, query, false); break;
+
+    case "mp4": case "video":
+      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}mp4 <judul>\`` });
+      await cmdPlay(sock, jid, query, true); break;
+
+    case "cari": case "search":
+      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}cari <judul>\`` });
+      await cmdSearch(sock, jid, query); break;
+
+    case "info":
+      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}info <judul>\`` });
+      await cmdInfo(sock, jid, query); break;
+
+    case "lirik": case "lyrics":
+      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}lirik <judul>\`` });
+      await cmdLyrics(sock, jid, query); break;
+
+    case "history": case "riwayat":
+      await cmdHistory(sock, jid); break;
+
+    case "ping":
+      const t = Date.now();
+      await sock.sendMessage(jid, { text:"🏓 Pong!" });
+      await sock.sendMessage(jid, { text:`✅ *Bot aktif!*\n⚡ Latensi: *${Date.now()-t}ms*` }); break;
+
+    // ── Games ──────────────────────────────────────────────────
+    case "tebak":
+      await cmdTebak(sock, jid); break;
+
+    case "skip":
+      if (tebakNow[jid]) {
+        const ans = tebakNow[jid].answer;
+        delete tebakNow[jid];
+        await sock.sendMessage(jid, { text:`⏭️ Di-skip!\n🎵 Jawaban: *${ans}*` });
+      } break;
+
+    case "hangman":
+      await cmdHangman(sock, jid); break;
+
+    case "hhint":
+      await cmdHangmanHint(sock, jid); break;
+
+    case "hstop":
+      if (hangman[jid]) { delete hangman[jid]; await sock.sendMessage(jid,{text:"🛑 Game hangman dihentikan."}); } break;
+
+    case "tictac": case "ttt":
+      await cmdTicTac(sock, jid, sender); break;
+
+    case "skor": case "score":
+      await cmdSkor(sock, jid, sender); break;
+
+    default:
+      await sock.sendMessage(jid, { text:`❓ Perintah *${P}${cmd}* tidak dikenal.\nKetik \`${P}menu\` untuk daftar perintah.` });
+  }
+}
+
+// ─── Koneksi WhatsApp ─────────────────────────────────────────
+async function startBot() {
+  const { state, saveCreds } = await useMultiFileAuthState(CONFIG.SESSION_DIR);
+  const { version }          = await fetchLatestBaileysVersion();
+
+  const sock = makeWASocket({
+    version,
+    logger:            pino({ level:"silent" }),
+    printQRInTerminal: false,
+    auth:              state,
+    browser:           Browsers.ubuntu("Chrome"),
+    msgRetryCounterCache,
+    syncFullHistory:   false,
+  });
+
+  store.bind(sock.ev);
+
+  // ── Pairing Code (hanya jika belum terdaftar) ────────────────
+  if (!sock.authState.creds.registered) {
+    const number = CONFIG.WA_NUMBER;
+    if (!number) {
+      console.error("❌ Set env WA_NUMBER=6281234567890 untuk pairing!");
+      process.exit(1);
+    }
+    try {
+      // Tunggu sebentar agar socket siap
+      await new Promise(r => setTimeout(r, 3000));
+      const code = await sock.requestPairingCode(number);
+      const fmt8 = code.match(/.{1,4}/g).join("-");
+      console.log(`\n╔══════════════════════════════╗`);
+      console.log(`║  🔑  PAIRING CODE:  ${fmt8}  ║`);
+      console.log(`╚══════════════════════════════╝`);
+      console.log(`\n➡️  Buka WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telepon`);
+      console.log(`    Masukkan kode: ${fmt8}\n`);
+    } catch(e) {
+      console.error("❌ Gagal pairing:", e.message);
+    }
+  }
+
+  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
+    if (connection === "close") {
+      const reconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("🔴 Koneksi putus. Reconnect:", reconnect);
+      if (reconnect) setTimeout(startBot, 5000);
+    } else if (connection === "open") {
+      console.log(`🟢 ${CONFIG.BOT_NAME} terhubung! Prefix: ${CONFIG.PREFIX}`);
+    }
+  });
+
+  sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (const msg of messages) {
+      if (msg.key.fromMe) continue;
+      await handleMessage(sock, msg).catch(e => console.error("[MSG ERR]", e.message));
+    }
+  });
+}
+
+console.log(`\n🎵 Starting ${CONFIG.BOT_NAME}...\n`);
+startBot().catch(console.error);
+
