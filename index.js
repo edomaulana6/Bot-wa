@@ -22,7 +22,6 @@ const YouTube   = require("youtube-sr").default;
 const ytdl      = require("ytdl-core");
 const axios     = require("axios");
 const express   = require("express");
-const Jimp      = require("jimp");
 
 // ─── Konfigurasi ──────────────────────────────────────────────
 const CONFIG = {
@@ -79,34 +78,27 @@ setInterval(cleanTemp, 5*60*1000);
  */
 async function makeThumbnail(ytThumbUrl, title, channel, duration) {
   try {
-    // Download gambar thumbnail dari YouTube
     const response = await axios.get(ytThumbUrl, { responseType: "arraybuffer", timeout: 8000 });
     const imgBuf   = Buffer.from(response.data);
 
-    // Load dengan Jimp
-    const img = await Jimp.read(imgBuf);
-    img.resize(640, 360);
+    const { Jimp, loadFont, HorizontalAlign, VerticalAlign } = require("jimp");
+    const { SANS_32_WHITE, SANS_16_WHITE } = require("@jimp/plugin-print");
 
-    // Overlay gelap di bawah untuk teks
-    const overlay = new Jimp(640, 100, 0x000000aa);
+    const img = await Jimp.read(imgBuf);
+    img.resize({ w: 640, h: 360 });
+
+    // Overlay gelap di bawah
+    const overlay = new Jimp({ width: 640, height: 100, color: 0x000000aa });
     img.composite(overlay, 0, 260);
 
-    // Load font
-    const fontLarge  = await Jimp.loadFont(Jimp.FONT_SANS_32_WHITE);
-    const fontSmall  = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE);
-
-    // Tulis judul (potong kalau panjang)
+    // Font & teks
+    const fontLarge = await loadFont(SANS_32_WHITE);
+    const fontSmall = await loadFont(SANS_16_WHITE);
     const shortTitle = title.length > 38 ? title.substring(0, 35) + "..." : title;
-    img.print(fontLarge, 12, 268, shortTitle);
-    img.print(fontSmall, 12, 310, `👤 ${channel}   ⏱ ${duration}`);
+    img.print({ font: fontLarge, x: 12, y: 268, text: shortTitle });
+    img.print({ font: fontSmall, x: 12, y: 310, text: `${channel}   ${duration}` });
 
-    // Tambah badge merah "🎵 MUSIK"
-    const badge = new Jimp(90, 28, 0xee1111ff);
-    img.composite(badge, 540, 10);
-    const fontBadge = await Jimp.loadFont(Jimp.FONT_SANS_16_WHITE);
-    img.print(fontBadge, 548, 15, "🎵 MUSIK");
-
-    return await img.getBufferAsync(Jimp.MIME_JPEG);
+    return await img.getBuffer("image/jpeg");
   } catch (e) {
     console.error("[THUMB ERROR]", e.message);
     return null;
