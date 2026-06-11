@@ -634,8 +634,44 @@ async function handleMessage(sock, msg) {
   }
 }
 
+// ─── Session via ENV (untuk Koyeb tanpa Persistent Volume) ───
+const SESSION_ENV_KEY = "WA_SESSION_CREDS";
+
+async function loadSessionFromEnv() {
+  const raw = process.env[SESSION_ENV_KEY];
+  if (!raw) return;
+  try {
+    const creds = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
+    fs.ensureDirSync(CONFIG.SESSION_DIR);
+    fs.writeJsonSync(path.join(CONFIG.SESSION_DIR, "creds.json"), creds, { spaces: 2 });
+    console.log("✅ Session dimuat dari ENV");
+  } catch(e) {
+    console.warn("⚠️ Gagal load session dari ENV:", e.message);
+  }
+}
+
+async function saveSessionToLog() {
+  try {
+    const credsPath = path.join(CONFIG.SESSION_DIR, "creds.json");
+    if (!fs.existsSync(credsPath)) return;
+    const creds  = fs.readJsonSync(credsPath);
+    const base64 = Buffer.from(JSON.stringify(creds)).toString("base64");
+    console.log(`\n╔══════════════════════════════════════╗`);
+    console.log(`║  💾  COPY SESSION INI KE ENV:         ║`);
+    console.log(`║  Key: WA_SESSION_CREDS                ║`);
+    console.log(`╚══════════════════════════════════════╝`);
+    console.log(`\nWA_SESSION_CREDS=${base64}\n`);
+    console.log(`(Paste nilai di atas ke Environment Variables Koyeb)`);
+  } catch(e) {
+    console.warn("⚠️ Gagal export session:", e.message);
+  }
+}
+
 // ─── Koneksi WhatsApp ─────────────────────────────────────────
 async function startBot() {
+  // Load session dari ENV jika ada
+  await loadSessionFromEnv();
+
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.SESSION_DIR);
   const { version }          = await fetchLatestBaileysVersion();
 
@@ -681,7 +717,10 @@ async function startBot() {
     }
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", async () => {
+    await saveCreds();
+    await saveSessionToLog();
+  });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
