@@ -634,41 +634,8 @@ async function handleMessage(sock, msg) {
   }
 }
 
-// ─── Session via ENV (untuk Koyeb tanpa Persistent Volume) ───
-const SESSION_ENV_KEY = "WA_SESSION_CREDS";
-
-async function loadSessionFromEnv() {
-  const raw = process.env[SESSION_ENV_KEY];
-  if (!raw) return;
-  try {
-    const creds = JSON.parse(Buffer.from(raw, "base64").toString("utf8"));
-    fs.ensureDirSync(CONFIG.SESSION_DIR);
-    fs.writeJsonSync(path.join(CONFIG.SESSION_DIR, "creds.json"), creds, { spaces: 2 });
-    console.log("✅ Session dimuat dari ENV");
-  } catch(e) {
-    console.warn("⚠️ Gagal load session dari ENV:", e.message);
-  }
-}
-
-async function saveSessionToLog() {
-  try {
-    const credsPath = path.join(CONFIG.SESSION_DIR, "creds.json");
-    if (!fs.existsSync(credsPath)) return;
-    const creds  = fs.readJsonSync(credsPath);
-    const base64 = Buffer.from(JSON.stringify(creds)).toString("base64");
-    console.log(`\n╔══════════════════════════════════════╗`);
-    console.log(`║  💾  SESSION BERHASIL DISIMPAN!       ║`);
-    console.log(`║  Salin ke ENV Koyeb:                  ║`);
-    console.log(`║  Key: WA_SESSION_CREDS                ║`);
-    console.log(`╚══════════════════════════════════════╝`);
-    console.log(`\nWA_SESSION_CREDS=${base64}\n`);
-  } catch(e) {}
-}
-
 // ─── Koneksi WhatsApp ─────────────────────────────────────────
 async function startBot() {
-  await loadSessionFromEnv();
-
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.SESSION_DIR);
   const { version }          = await fetchLatestBaileysVersion();
 
@@ -677,9 +644,12 @@ async function startBot() {
     logger:            pino({ level:"silent" }),
     printQRInTerminal: false,
     auth:              state,
-    browser:           Browsers.ubuntu("Chrome"),
+    browser:           Browsers.macOS("Safari"),
     msgRetryCounterCache,
     syncFullHistory:   false,
+    connectTimeoutMs:  60000,
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 10000,
   });
 
   // ── Pairing Code (hanya jika belum terdaftar) ────────────────
@@ -690,7 +660,6 @@ async function startBot() {
       process.exit(1);
     }
     try {
-      // Tunggu sebentar agar socket siap
       await new Promise(r => setTimeout(r, 3000));
       const code = await sock.requestPairingCode(number);
       const fmt8 = code.match(/.{1,4}/g).join("-");
@@ -707,25 +676,24 @@ async function startBot() {
   sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
-      const loggedOut = code === DisconnectReason.loggedOut;
       console.log("🔴 Koneksi putus, kode:", code);
-      if (loggedOut) {
-        // Hapus session lama, mulai ulang untuk pairing baru
-        console.log("🔄 Session logout, memulai ulang pairing...");
+      if (code === DisconnectReason.loggedOut) {
+        console.log("🔄 Logout manual, hapus session...");
         fs.removeSync(CONFIG.SESSION_DIR);
-        setTimeout(startBot, 3000);
-      } else {
-        // Reconnect biasa
-        setTimeout(startBot, 5000);
       }
+      setTimeout(startBot, 5000);
     } else if (connection === "open") {
       console.log(`🟢 ${CONFIG.BOT_NAME} terhubung! Prefix: ${CONFIG.PREFIX}`);
     }
   });
 
+  let sessionSaved = false;
   sock.ev.on("creds.update", async () => {
     await saveCreds();
-    await saveSessionToLog();
+    if (!sessionSaved) {
+      sessionSaved = true;
+      console.log("✅ Session tersimpan di folder sessions/");
+    }
   });
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
