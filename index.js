@@ -11,10 +11,7 @@ const {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
-  makeInMemoryStore,
   Browsers,
-  generateWAMessageFromContent,
-  proto,
 } = require("@whiskeysockets/baileys");
 
 const pino      = require("pino");
@@ -52,7 +49,6 @@ app.listen(CONFIG.PORT, () => console.log(`🌐 HTTP server jalan di port ${CONF
 
 // ─── State Global ─────────────────────────────────────────────
 const msgRetryCounterCache = new NodeCache();
-const store    = makeInMemoryStore({ logger: pino().child({ level: "silent", stream: "store" }) });
 const history  = {};      // { jid: [{title,url,duration,channel}] }
 const tebakNow = {};      // { jid: {answer, attempts, startTime} }
 const tebakSkor= {};      // { jid: { number: score } }
@@ -653,8 +649,6 @@ async function startBot() {
     syncFullHistory:   false,
   });
 
-  store.bind(sock.ev);
-
   // ── Pairing Code (hanya jika belum terdaftar) ────────────────
   if (!sock.authState.creds.registered) {
     const number = CONFIG.WA_NUMBER;
@@ -700,4 +694,3 @@ async function startBot() {
 
 console.log(`\n🎵 Starting ${CONFIG.BOT_NAME}...\n`);
 startBot().catch(console.error);
-
