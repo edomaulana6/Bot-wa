@@ -2,6 +2,7 @@ FROM node:20-slim
 
 RUN apt-get update && apt-get install -y \
     ffmpeg \
+    git \
     python3 \
     build-essential \
     libcairo2-dev \
