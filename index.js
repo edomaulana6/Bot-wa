@@ -657,19 +657,16 @@ async function saveSessionToLog() {
     const creds  = fs.readJsonSync(credsPath);
     const base64 = Buffer.from(JSON.stringify(creds)).toString("base64");
     console.log(`\n╔══════════════════════════════════════╗`);
-    console.log(`║  💾  COPY SESSION INI KE ENV:         ║`);
+    console.log(`║  💾  SESSION BERHASIL DISIMPAN!       ║`);
+    console.log(`║  Salin ke ENV Koyeb:                  ║`);
     console.log(`║  Key: WA_SESSION_CREDS                ║`);
     console.log(`╚══════════════════════════════════════╝`);
     console.log(`\nWA_SESSION_CREDS=${base64}\n`);
-    console.log(`(Paste nilai di atas ke Environment Variables Koyeb)`);
-  } catch(e) {
-    console.warn("⚠️ Gagal export session:", e.message);
-  }
+  } catch(e) {}
 }
 
 // ─── Koneksi WhatsApp ─────────────────────────────────────────
 async function startBot() {
-  // Load session dari ENV jika ada
   await loadSessionFromEnv();
 
   const { state, saveCreds } = await useMultiFileAuthState(CONFIG.SESSION_DIR);
@@ -709,9 +706,18 @@ async function startBot() {
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
     if (connection === "close") {
-      const reconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("🔴 Koneksi putus. Reconnect:", reconnect);
-      if (reconnect) setTimeout(startBot, 5000);
+      const code = lastDisconnect?.error?.output?.statusCode;
+      const loggedOut = code === DisconnectReason.loggedOut;
+      console.log("🔴 Koneksi putus, kode:", code);
+      if (loggedOut) {
+        // Hapus session lama, mulai ulang untuk pairing baru
+        console.log("🔄 Session logout, memulai ulang pairing...");
+        fs.removeSync(CONFIG.SESSION_DIR);
+        setTimeout(startBot, 3000);
+      } else {
+        // Reconnect biasa
+        setTimeout(startBot, 5000);
+      }
     } else if (connection === "open") {
       console.log(`🟢 ${CONFIG.BOT_NAME} terhubung! Prefix: ${CONFIG.PREFIX}`);
     }
