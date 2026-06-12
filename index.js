@@ -474,6 +474,9 @@ async function handleMsg(sock, msg) {
     (msg.message.imageMessage && msg.message.imageMessage.caption) || ""
   ).trim();
 
+  // Log semua pesan masuk
+  console.log("[MSG] dari=" + sender.split("@")[0] + " jid=" + jid.split("@")[0] + " fromMe=" + msg.key.fromMe + " body=" + (body || "(kosong)"));
+
   if (!body) return;
 
   // Jika tidak ada prefix, cek game aktif
@@ -642,10 +645,12 @@ async function startBot() {
 
   sock.ev.on("messages.upsert", async function(upsert) {
     if (upsert.type !== "notify") return;
+    console.log("[UPSERT] " + upsert.messages.length + " pesan, type=" + upsert.type);
     for (const msg of upsert.messages) {
       // Lewati pesan dari bot sendiri kecuali chat ke diri sendiri (untuk testing)
       const remoteJid  = msg.key.remoteJid || "";
       const isSelfChat = WA_NUMBER && remoteJid.startsWith(WA_NUMBER);
+      console.log("[MSG-RAW] remoteJid=" + remoteJid.split("@")[0] + " fromMe=" + msg.key.fromMe + " isSelfChat=" + isSelfChat);
       if (msg.key.fromMe && !isSelfChat) continue;
 
       try {
