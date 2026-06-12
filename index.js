@@ -611,16 +611,40 @@ async function startBot() {
       console.error("Set ENV: WA_NUMBER=62812xxxx");
       process.exit(1);
     }
-    try {
-      await new Promise(function(r) { setTimeout(r, 3000); });
-      const code = await sock.requestPairingCode(WA_NUMBER);
-      const fmt  = code.match(/.{1,4}/g).join("-");
-      console.log("\n*** PAIRING CODE: " + fmt + " ***");
-      console.log("Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon");
-      console.log("Masukkan: " + fmt + "\n");
-    } catch (e) {
-      console.error("Gagal pairing:", e.message);
+
+    // Fungsi minta kode baru
+    async function requestCode() {
+      try {
+        const code = await sock.requestPairingCode(WA_NUMBER);
+        const fmt  = code.match(/.{1,4}/g).join("-");
+        console.log("\n*** PAIRING CODE: " + fmt + " ***");
+        console.log("Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon");
+        console.log("Masukkan: " + fmt);
+        console.log("(Kode baru dalam 30 detik jika belum dipakai)\n");
+      } catch (e) {
+        console.error("Gagal minta kode:", e.message);
+      }
     }
+
+    // Tunggu socket siap dulu
+    await new Promise(function(r) { setTimeout(r, 3000); });
+    await requestCode();
+
+    // Refresh setiap 30 detik selama belum terhubung
+    const pairInterval = setInterval(async function() {
+      if (sock.authState.creds.registered) {
+        clearInterval(pairInterval);
+        return;
+      }
+      await requestCode();
+    }, 30000);
+
+    // Stop interval saat koneksi berhasil
+    sock.ev.once("connection.update", function(update) {
+      if (update.connection === "open") {
+        clearInterval(pairInterval);
+      }
+    });
   }
 
   sock.ev.on("connection.update", function(update) {
