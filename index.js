@@ -1,11 +1,13 @@
 /**
  * ╔══════════════════════════════════════════════╗
- * ║     🎵  WA MUSIC BOT v2.0  🎵               ║
+ * ║     🎵  WA MUSIC BOT v3.0  🎵               ║
  * ║     Koyeb Server Edition                     ║
- * ║     Fitur: Musik + Thumbnail + Games         ║
  * ╚══════════════════════════════════════════════╝
  */
 
+"use strict";
+
+// ─── Import ───────────────────────────────────────────────────
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -23,152 +25,161 @@ const ytdl      = require("ytdl-core");
 const axios     = require("axios");
 const express   = require("express");
 
-// ─── Konfigurasi ──────────────────────────────────────────────
-const CONFIG = {
-  PREFIX:       process.env.PREFIX       || "!",
-  BOT_NAME:     process.env.BOT_NAME     || "🎵 MusicBot",
-  OWNER_NUMBER: process.env.OWNER_NUMBER || "",
-  SESSION_DIR:  process.env.SESSION_DIR  || "./sessions",
-  TEMP_DIR:     "./temp",
-  MAX_DURATION: parseInt(process.env.MAX_DURATION || "15"),
-  MAX_RESULTS:  5,
-  PORT:         parseInt(process.env.PORT || "8000"),
-  // Nomor WA untuk pairing (set via env, WAJIB)
-  WA_NUMBER:    process.env.WA_NUMBER    || "",
-};
+// ─── Config ───────────────────────────────────────────────────
+const PREFIX      = process.env.PREFIX       || "!";
+const BOT_NAME    = process.env.BOT_NAME     || "🎵 MusicBot";
+const WA_NUMBER   = process.env.WA_NUMBER    || "";
+const SESSION_DIR = process.env.SESSION_DIR  || "./sessions";
+const TEMP_DIR    = "./temp";
+const MAX_DUR     = parseInt(process.env.MAX_DURATION || "15");
+const PORT        = parseInt(process.env.PORT || "8000");
 
-fs.ensureDirSync(CONFIG.SESSION_DIR);
-fs.ensureDirSync(CONFIG.TEMP_DIR);
+fs.ensureDirSync(SESSION_DIR);
+fs.ensureDirSync(TEMP_DIR);
 
-// ─── Keep-alive HTTP Server (wajib untuk Koyeb) ──────────────
+// ─── HTTP Keep-alive (wajib Koyeb) ───────────────────────────
 const app = express();
-app.get("/",        (_req, res) => res.send(`✅ ${CONFIG.BOT_NAME} aktif!`));
-app.get("/health",  (_req, res) => res.json({ status: "ok", bot: CONFIG.BOT_NAME, uptime: process.uptime() }));
-app.listen(CONFIG.PORT, () => console.log(`🌐 HTTP server jalan di port ${CONFIG.PORT}`));
+app.get("/",       (_, res) => res.send(`✅ ${BOT_NAME} aktif!`));
+app.get("/health", (_, res) => res.json({ status: "ok", uptime: process.uptime() }));
+app.listen(PORT, () => console.log(`🌐 HTTP jalan di port ${PORT}`));
 
-// ─── State Global ─────────────────────────────────────────────
-const msgRetryCounterCache = new NodeCache();
-const history  = {};      // { jid: [{title,url,duration,channel}] }
-const tebakNow = {};      // { jid: {answer, attempts, startTime} }
-const tebakSkor= {};      // { jid: { number: score } }
-const hangman  = {};      // { jid: {word, guessed, wrong, maxWrong} }
-const duel     = {};      // { jid: {p1,p2,board,turn} }
+// ─── State ────────────────────────────────────────────────────
+const retryCache = new NodeCache();
+const playHist   = {};   // riwayat putar per jid
+const tebakGame  = {};   // tebak lagu per jid
+const tebakSkor  = {};   // skor per jid
+const hmGame     = {};   // hangman per jid
+const tttGame    = {};   // tictactoe per jid
 
-// ─── Utilitas ─────────────────────────────────────────────────
-const fmt = (s) => { const m=Math.floor(s/60),x=s%60; return `${m}:${String(x).padStart(2,"0")}`; };
-const fmtN = (n) => n>=1e6?(n/1e6).toFixed(1)+"M":n>=1e3?(n/1e3).toFixed(1)+"K":String(n);
-const addHist = (jid, item) => {
-  if (!history[jid]) history[jid]=[];
-  history[jid].unshift(item);
-  if (history[jid].length>10) history[jid].pop();
-};
-const cleanTemp = () => {
-  const now=Date.now();
-  fs.readdirSync(CONFIG.TEMP_DIR).forEach(f=>{
-    const fp=path.join(CONFIG.TEMP_DIR,f);
-    if(now-fs.statSync(fp).mtimeMs>10*60*1000) fs.removeSync(fp);
-  });
-};
-setInterval(cleanTemp, 5*60*1000);
+// ─── Helper ───────────────────────────────────────────────────
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
 
-// ─── Thumbnail Generator ──────────────────────────────────────
-/**
- * Buat thumbnail kartu lagu dari URL thumbnail YouTube
- * Return: Buffer gambar PNG siap kirim
- */
-async function makeThumbnail(ytThumbUrl, title, channel, duration) {
+function fmtNum(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+  return String(n);
+}
+
+function addHist(jid, item) {
+  if (!playHist[jid]) playHist[jid] = [];
+  playHist[jid].unshift(item);
+  if (playHist[jid].length > 10) playHist[jid].pop();
+}
+
+// Bersihkan temp setiap 5 menit
+setInterval(() => {
+  const now = Date.now();
   try {
-    const response = await axios.get(ytThumbUrl, { responseType: "arraybuffer", timeout: 8000 });
-    const imgBuf   = Buffer.from(response.data);
+    fs.readdirSync(TEMP_DIR).forEach(f => {
+      const fp = path.join(TEMP_DIR, f);
+      if (now - fs.statSync(fp).mtimeMs > 600000) fs.removeSync(fp);
+    });
+  } catch (_) {}
+}, 300000);
 
-    const { Jimp, loadFont, HorizontalAlign, VerticalAlign } = require("jimp");
-    const { SANS_32_WHITE, SANS_16_WHITE } = require("@jimp/plugin-print");
+// ─── Thumbnail (axios + jimp v1) ──────────────────────────────
+async function makeThumbnail(videoId, title, channel, dur) {
+  try {
+    const { Jimp } = require("jimp");
+    const url = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+    const res = await axios.get(url, { responseType: "arraybuffer", timeout: 8000 });
+    const img = await Jimp.read(Buffer.from(res.data));
 
-    const img = await Jimp.read(imgBuf);
+    // Resize ke 640x360
     img.resize({ w: 640, h: 360 });
 
-    // Overlay gelap di bawah
-    const overlay = new Jimp({ width: 640, height: 100, color: 0x000000aa });
-    img.composite(overlay, 0, 260);
+    // Overlay hitam transparan di bawah
+    const bar = new Jimp({ width: 640, height: 90, color: 0x000000cc });
+    img.composite(bar, 0, 270);
 
-    // Font & teks
-    const fontLarge = await loadFont(SANS_32_WHITE);
-    const fontSmall = await loadFont(SANS_16_WHITE);
-    const shortTitle = title.length > 38 ? title.substring(0, 35) + "..." : title;
-    img.print({ font: fontLarge, x: 12, y: 268, text: shortTitle });
-    img.print({ font: fontSmall, x: 12, y: 310, text: `${channel}   ${duration}` });
-
+    // Tulis teks pakai print (jimp v1 tanpa loadFont untuk built-in)
+    // Jimp v1 tidak punya built-in font rendering tanpa plugin
+    // Gunakan jimp bmp overlay sederhana + export buffer
     return await img.getBuffer("image/jpeg");
   } catch (e) {
-    console.error("[THUMB ERROR]", e.message);
+    console.error("[THUMB]", e.message);
     return null;
   }
 }
 
-// ─── Teks Menu ────────────────────────────────────────────────
+// ─── Menu ─────────────────────────────────────────────────────
 const MENU = `
 ╔══════════════════════════════════╗
-║  🎵  *WA MUSIC BOT v2.0*  🎵    ║
+║  🎵  *WA MUSIC BOT v3.0*        ║
 ╠══════════════════════════════════╣
 ║  🎧  *MUSIK*                     ║
-║  ${CONFIG.PREFIX}play  <judul/link>         ║
-║  ${CONFIG.PREFIX}mp4   <judul/link>         ║
-║  ${CONFIG.PREFIX}cari  <judul>              ║
-║  ${CONFIG.PREFIX}lirik <judul>              ║
-║  ${CONFIG.PREFIX}info  <judul/link>         ║
-║  ${CONFIG.PREFIX}history                    ║
+║  ${PREFIX}play  <judul/link>         ║
+║  ${PREFIX}mp4   <judul/link>         ║
+║  ${PREFIX}cari  <judul>              ║
+║  ${PREFIX}info  <judul>              ║
+║  ${PREFIX}lirik <judul>              ║
+║  ${PREFIX}history                    ║
 ╠══════════════════════════════════╣
 ║  🎮  *PERMAINAN*                 ║
-║  ${CONFIG.PREFIX}tebak   — Tebak judul lagu ║
-║  ${CONFIG.PREFIX}hangman — Tebak kata musik ║
-║  ${CONFIG.PREFIX}tictac  — Tic-Tac-Toe      ║
-║  ${CONFIG.PREFIX}skor    — Lihat skormu      ║
+║  ${PREFIX}tebak   — Tebak judul lagu ║
+║  ${PREFIX}skip    — Lewati soal      ║
+║  ${PREFIX}hangman — Tebak kata       ║
+║  ${PREFIX}tictac  — Tic-Tac-Toe      ║
+║  ${PREFIX}skor    — Papan skor       ║
 ╠══════════════════════════════════╣
 ║  ℹ️   *LAINNYA*                   ║
-║  ${CONFIG.PREFIX}menu  — tampilkan ini       ║
-║  ${CONFIG.PREFIX}ping  — cek status bot      ║
-╚══════════════════════════════════╝
-`.trim();
+║  ${PREFIX}menu  — tampilkan ini       ║
+║  ${PREFIX}ping  — cek status          ║
+╚══════════════════════════════════╝`.trim();
 
-// ─── Command: Play ────────────────────────────────────────────
-async function cmdPlay(sock, jid, query, asVideo=false) {
+// ─── CMD: play ────────────────────────────────────────────────
+async function cmdPlay(sock, jid, query, asVideo = false) {
   await sock.sendMessage(jid, { text: `🔍 Mencari *${query}*...` });
 
   let vid;
   try {
-    const res = await YouTube.search(query, { limit:1, type:"video" });
-    if (!res.length) return sock.sendMessage(jid, { text:"❌ Lagu tidak ditemukan." });
-    vid = res[0];
-  } catch { return sock.sendMessage(jid, { text:"❌ Gagal mencari. Coba lagi." }); }
+    const results = await YouTube.search(query, { limit: 1, type: "video" });
+    if (!results.length) return sock.sendMessage(jid, { text: "❌ Lagu tidak ditemukan." });
+    vid = results[0];
+  } catch {
+    return sock.sendMessage(jid, { text: "❌ Gagal mencari. Coba lagi." });
+  }
 
-  const durMin = Math.floor((vid.duration||0)/60000);
-  if (durMin > CONFIG.MAX_DURATION)
-    return sock.sendMessage(jid, { text:`⚠️ Durasi terlalu panjang (${durMin} menit). Maks: *${CONFIG.MAX_DURATION} menit*.` });
+  const durSec  = Math.floor((vid.duration || 0) / 1000);
+  const durMin  = Math.floor(durSec / 60);
+  if (durMin > MAX_DUR)
+    return sock.sendMessage(jid, { text: `⚠️ Durasi ${durMin} menit terlalu panjang. Maks ${MAX_DUR} menit.` });
 
   const title   = vid.title || "Unknown";
-  const url     = `https://www.youtube.com/watch?v=${vid.id}`;
-  const dur     = fmt(Math.floor((vid.duration||0)/1000));
+  const ytUrl   = `https://www.youtube.com/watch?v=${vid.id}`;
+  const dur     = fmtDur(durSec);
   const channel = vid.channel?.name || "Unknown";
-  const thumbUrl= `https://i.ytimg.com/vi/${vid.id}/hqdefault.jpg`;
 
-  // ── Kirim Thumbnail dulu ──────────────────────────────────
-  const thumbBuf = await makeThumbnail(thumbUrl, title, channel, dur);
-  if (thumbBuf) {
+  // Kirim thumbnail
+  const thumb = await makeThumbnail(vid.id, title, channel, dur);
+  if (thumb) {
     await sock.sendMessage(jid, {
-      image: thumbBuf,
-      caption: `🎵 *${title}*\n👤 ${channel} | ⏱ ${dur}\n\n⬇️ Mengunduh, mohon tunggu...`,
+      image: thumb,
+      caption: `🎵 *${title}*\n👤 ${channel} | ⏱ ${dur}\n\n⬇️ Mengunduh...`,
       mimetype: "image/jpeg",
     });
   } else {
-    await sock.sendMessage(jid, { text:`🎵 *${title}*\n👤 ${channel} | ⏱ ${dur}\n\n⬇️ Mengunduh...` });
+    await sock.sendMessage(jid, { text: `🎵 *${title}*\n👤 ${channel} | ⏱ ${dur}\n\n⬇️ Mengunduh...` });
   }
 
-  const ext  = asVideo ? "mp4" : "mp3";
-  const tmp  = path.join(CONFIG.TEMP_DIR, `${Date.now()}.${ext}`);
+  const ext = asVideo ? "mp4" : "mp3";
+  const tmp = path.join(TEMP_DIR, `${Date.now()}.${ext}`);
 
   try {
+    await new Promise((resolve, reject) => {
+      const stream = asVideo
+        ? ytdl(ytUrl, { quality: "highestvideo" })
+        : ytdl(ytUrl, { quality: "highestaudio", filter: "audioonly" });
+      stream.pipe(fs.createWriteStream(tmp))
+        .on("finish", resolve)
+        .on("error", reject);
+    });
+
     if (asVideo) {
-      await new Promise((res,rej) => ytdl(url,{quality:"highestvideo"}).pipe(fs.createWriteStream(tmp)).on("finish",res).on("error",rej));
       await sock.sendMessage(jid, {
         video: { url: tmp },
         caption: `🎬 *${title}*\n👤 ${channel} | ⏱ ${dur}`,
@@ -176,7 +187,6 @@ async function cmdPlay(sock, jid, query, asVideo=false) {
         mimetype: "video/mp4",
       });
     } else {
-      await new Promise((res,rej) => ytdl(url,{quality:"highestaudio",filter:"audioonly"}).pipe(fs.createWriteStream(tmp)).on("finish",res).on("error",rej));
       await sock.sendMessage(jid, {
         audio: { url: tmp },
         mimetype: "audio/mpeg",
@@ -184,352 +194,336 @@ async function cmdPlay(sock, jid, query, asVideo=false) {
         fileName: `${title}.mp3`,
       });
     }
-    addHist(jid, { title, url, dur, channel });
-    await sock.sendMessage(jid, { text:`✅ Selesai! Ketik \`${CONFIG.PREFIX}lirik ${title}\` untuk liriknya.` });
-  } catch(e) {
-    console.error("[PLAY ERROR]", e.message);
+
+    addHist(jid, { title, dur, channel });
+    await sock.sendMessage(jid, {
+      text: `✅ Selesai!\n💡 \`${PREFIX}lirik ${title}\` untuk liriknya.`,
+    });
+  } catch (e) {
+    console.error("[PLAY]", e.message);
     fs.removeSync(tmp);
-    await sock.sendMessage(jid, { text:"❌ Gagal download. Video mungkin dibatasi." });
+    await sock.sendMessage(jid, { text: "❌ Gagal download. Video mungkin dibatasi." });
   }
 }
 
-// ─── Command: Search ──────────────────────────────────────────
-async function cmdSearch(sock, jid, query) {
-  await sock.sendMessage(jid, { text:`🔍 Mencari *${query}*...` });
+// ─── CMD: cari ────────────────────────────────────────────────
+async function cmdCari(sock, jid, query) {
+  await sock.sendMessage(jid, { text: `🔍 Mencari *${query}*...` });
   try {
-    const res = await YouTube.search(query, { limit:CONFIG.MAX_RESULTS, type:"video" });
-    if (!res.length) return sock.sendMessage(jid, { text:"❌ Tidak ada hasil." });
+    const results = await YouTube.search(query, { limit: 5, type: "video" });
+    if (!results.length) return sock.sendMessage(jid, { text: "❌ Tidak ada hasil." });
 
-    let msg = `🎵 *Hasil: "${query}"*\n${"─".repeat(32)}\n\n`;
-    for (let i=0;i<res.length;i++) {
-      const v   = res[i];
-      const dur = fmt(Math.floor((v.duration||0)/1000));
-      msg += `*${i+1}.* ${v.title}\n    👤 ${v.channel?.name||"?"} | ⏱ ${dur}\n\n`;
-    }
-    msg += `💡 \`${CONFIG.PREFIX}play <judul>\` untuk download.`;
-    await sock.sendMessage(jid, { text:msg });
-  } catch { await sock.sendMessage(jid, { text:"❌ Gagal mencari." }); }
+    let msg = `🎵 *Hasil: "${query}"*\n${"─".repeat(30)}\n\n`;
+    results.forEach((v, i) => {
+      const dur = fmtDur(Math.floor((v.duration || 0) / 1000));
+      msg += `*${i + 1}.* ${v.title}\n    👤 ${v.channel?.name || "?"} | ⏱ ${dur}\n\n`;
+    });
+    msg += `💡 \`${PREFIX}play <judul>\` untuk download.`;
+    await sock.sendMessage(jid, { text: msg });
+  } catch {
+    await sock.sendMessage(jid, { text: "❌ Gagal mencari." });
+  }
 }
 
-// ─── Command: Info ────────────────────────────────────────────
+// ─── CMD: info ────────────────────────────────────────────────
 async function cmdInfo(sock, jid, query) {
-  await sock.sendMessage(jid, { text:`🔍 Mengambil info *${query}*...` });
+  await sock.sendMessage(jid, { text: `🔍 Mengambil info...` });
   try {
-    const res = await YouTube.search(query, { limit:1, type:"video" });
-    if (!res.length) return sock.sendMessage(jid, { text:"❌ Tidak ditemukan." });
-    const v   = res[0];
-    const dur = fmt(Math.floor((v.duration||0)/1000));
-    const thumbBuf = await makeThumbnail(`https://i.ytimg.com/vi/${v.id}/hqdefault.jpg`, v.title, v.channel?.name||"?", dur);
+    const results = await YouTube.search(query, { limit: 1, type: "video" });
+    if (!results.length) return sock.sendMessage(jid, { text: "❌ Tidak ditemukan." });
+    const v   = results[0];
+    const dur = fmtDur(Math.floor((v.duration || 0) / 1000));
 
     const caption =
       `╔══ 🎵 *INFO LAGU* ══╗\n` +
       `║ *Judul:*   ${v.title}\n` +
-      `║ *Channel:* ${v.channel?.name||"?"}\n` +
+      `║ *Channel:* ${v.channel?.name || "?"}\n` +
       `║ *Durasi:*  ${dur}\n` +
-      `║ *Views:*   ${fmtN(v.views||0)}\n` +
-      `║ *URL:*     https://youtu.be/${v.id}\n` +
-      `╚══════════════════════╝`;
+      `║ *Views:*   ${fmtNum(v.views || 0)}\n` +
+      `║ *Link:*    youtu.be/${v.id}\n` +
+      `╚═══════════════════╝`;
 
-    if (thumbBuf) {
-      await sock.sendMessage(jid, { image:thumbBuf, caption, mimetype:"image/jpeg" });
+    const thumb = await makeThumbnail(v.id, v.title, v.channel?.name || "?", dur);
+    if (thumb) {
+      await sock.sendMessage(jid, { image: thumb, caption, mimetype: "image/jpeg" });
     } else {
-      await sock.sendMessage(jid, { text:caption });
+      await sock.sendMessage(jid, { text: caption });
     }
-  } catch { await sock.sendMessage(jid, { text:"❌ Gagal mengambil info." }); }
-}
-
-// ─── Command: Lirik ───────────────────────────────────────────
-async function cmdLyrics(sock, jid, query) {
-  await sock.sendMessage(jid, { text:`📝 Mencari lirik *${query}*...` });
-  try {
-    const enc = encodeURIComponent(query);
-    const r   = await axios.get(`https://lyrist.vercel.app/api/${enc}`, { timeout:10000 });
-    if (!r.data?.lyrics) throw new Error("no lyrics");
-    const msg =
-      `🎤 *${r.data.title||query}*\n👤 ${r.data.artist||"Unknown"}\n${"─".repeat(30)}\n\n` +
-      r.data.lyrics.substring(0,3500) +
-      (r.data.lyrics.length>3500 ? "\n\n_(lirik dipotong)_" : "");
-    await sock.sendMessage(jid, { text:msg });
   } catch {
-    await sock.sendMessage(jid, { text:`❌ Lirik *${query}* tidak ditemukan.\n💡 Coba judul dalam Bahasa Inggris.` });
+    await sock.sendMessage(jid, { text: "❌ Gagal mengambil info." });
   }
 }
 
-// ─── Command: History ─────────────────────────────────────────
+// ─── CMD: lirik ───────────────────────────────────────────────
+async function cmdLirik(sock, jid, query) {
+  await sock.sendMessage(jid, { text: `📝 Mencari lirik *${query}*...` });
+  try {
+    const r = await axios.get(
+      `https://lyrist.vercel.app/api/${encodeURIComponent(query)}`,
+      { timeout: 10000 }
+    );
+    if (!r.data?.lyrics) throw new Error("no lyrics");
+    const msg =
+      `🎤 *${r.data.title || query}*\n👤 ${r.data.artist || "Unknown"}\n${"─".repeat(30)}\n\n` +
+      r.data.lyrics.substring(0, 3500) +
+      (r.data.lyrics.length > 3500 ? "\n\n_(dipotong)_" : "");
+    await sock.sendMessage(jid, { text: msg });
+  } catch {
+    await sock.sendMessage(jid, {
+      text: `❌ Lirik tidak ditemukan.\n💡 Coba tulis judulnya dalam Bahasa Inggris.`,
+    });
+  }
+}
+
+// ─── CMD: history ─────────────────────────────────────────────
 async function cmdHistory(sock, jid) {
-  const h = history[jid];
-  if (!h?.length) return sock.sendMessage(jid, { text:"📋 Belum ada riwayat pemutaran." });
+  const h = playHist[jid];
+  if (!h?.length) return sock.sendMessage(jid, { text: "📋 Belum ada riwayat." });
   let msg = `📋 *History Pemutaran*\n${"─".repeat(30)}\n\n`;
-  h.forEach((x,i) => { msg+=`*${i+1}.* ${x.title}\n    👤 ${x.channel} | ⏱ ${x.dur}\n\n`; });
-  msg += `💡 \`${CONFIG.PREFIX}play <judul>\` untuk memutar ulang.`;
-  await sock.sendMessage(jid, { text:msg });
+  h.forEach((x, i) => { msg += `*${i + 1}.* ${x.title}\n    👤 ${x.channel} | ⏱ ${x.dur}\n\n`; });
+  await sock.sendMessage(jid, { text: msg });
 }
 
 // ─── GAME: Tebak Lagu ─────────────────────────────────────────
-const SONG_POOL = [
-  { title:"Shape of You",    artist:"Ed Sheeran",    hint:"Lagu pop Inggris 2017 tentang bertemu seseorang di gym" },
-  { title:"Bohemian Rhapsody",artist:"Queen",        hint:"Lagu rock klasik 1975, ada bagian opera di tengahnya" },
-  { title:"Blinding Lights", artist:"The Weeknd",    hint:"Lagu synth-pop 2019 dengan nuansa 80-an" },
-  { title:"Levitating",      artist:"Dua Lipa",      hint:"Lagu disko-pop 2020 tentang terbang bersama seseorang" },
-  { title:"Lantas",          artist:"Juicy Luicy",   hint:"Lagu pop Indonesia tentang rasa yang belum selesai" },
-  { title:"Hati-Hati di Jalan",artist:"Tulus",       hint:"Lagu pop Indonesia yang sering jadi OST film" },
-  { title:"Kangen",          artist:"Dewa 19",       hint:"Lagu rock Indonesia lawas tentang rindu" },
-  { title:"Manusia Kuat",    artist:"Tulus",         hint:"Lagu pop Indonesia tentang ketangguhan" },
-  { title:"Satu",            artist:"Gigi",          hint:"Lagu rock Indonesia tahun 2000-an" },
-  { title:"Stressed Out",    artist:"Twenty One Pilots",hint:"Lagu alternative hip-hop tentang nostalgia masa kecil" },
-  { title:"Dynamite",        artist:"BTS",           hint:"Lagu K-Pop 2020 berbahasa Inggris penuh energi" },
-  { title:"Stay",            artist:"The Kid LAROI ft. Justin Bieber",hint:"Lagu pop 2021 yang sangat viral di TikTok" },
-  { title:"Peaches",         artist:"Justin Bieber", hint:"Lagu R&B 2021 tentang buah persik dan California" },
-  { title:"Riptide",         artist:"Vance Joy",     hint:"Lagu indie pop Australia dengan ukulele" },
-  { title:"Someone Like You",artist:"Adele",         hint:"Ballad piano Adele tentang mantan yang menikah" },
+const SONGS = [
+  { title: "shape of you",      artist: "Ed Sheeran",       hint: "Lagu pop 2017, ketemu di gym" },
+  { title: "bohemian rhapsody", artist: "Queen",             hint: "Rock klasik 1975, ada bagian opera" },
+  { title: "blinding lights",   artist: "The Weeknd",        hint: "Synth-pop 2019 nuansa 80-an" },
+  { title: "levitating",        artist: "Dua Lipa",          hint: "Disko-pop 2020 tentang terbang" },
+  { title: "lantas",            artist: "Juicy Luicy",       hint: "Pop Indonesia tentang rasa belum selesai" },
+  { title: "hati-hati di jalan",artist: "Tulus",             hint: "Pop Indonesia, sering jadi OST film" },
+  { title: "kangen",            artist: "Dewa 19",           hint: "Rock Indonesia lawas tentang rindu" },
+  { title: "stressed out",      artist: "Twenty One Pilots", hint: "Alt hip-hop, nostalgia masa kecil" },
+  { title: "dynamite",          artist: "BTS",               hint: "K-Pop 2020, bahasa Inggris penuh energi" },
+  { title: "someone like you",  artist: "Adele",             hint: "Piano ballad tentang mantan yang sudah menikah" },
+  { title: "riptide",           artist: "Vance Joy",         hint: "Indie pop Australia pakai ukulele" },
+  { title: "stay",              artist: "The Kid LAROI",     hint: "Viral TikTok 2021 feat Justin Bieber" },
+  { title: "satu",              artist: "Gigi",              hint: "Rock Indonesia era 2000-an" },
+  { title: "manusia kuat",      artist: "Tulus",             hint: "Pop Indonesia tentang ketangguhan" },
+  { title: "peaches",           artist: "Justin Bieber",     hint: "R&B 2021 tentang California" },
 ];
 
 async function cmdTebak(sock, jid) {
-  if (tebakNow[jid]) {
-    const t = tebakNow[jid];
+  if (tebakGame[jid]) {
+    const g = tebakGame[jid];
     return sock.sendMessage(jid, {
       text:
-        `🎮 Kamu masih punya tebakan aktif!\n\n` +
-        `🎵 *Petunjuk:* ${t.hint}\n` +
-        `🎤 *Artis:* ${t.artist}\n\n` +
-        `Ketik judul lagunya untuk menjawab!\n` +
-        `Atau \`${CONFIG.PREFIX}skip\` untuk lewati.`,
+        `🎮 Masih ada soal aktif!\n\n` +
+        `🎵 *Petunjuk:* ${g.hint}\n` +
+        `🎤 *Artis:* ${g.artist}\n\n` +
+        `Ketik judul lagu, atau \`${PREFIX}skip\` untuk lewati.`,
     });
   }
-  const song = SONG_POOL[Math.floor(Math.random() * SONG_POOL.length)];
-  tebakNow[jid] = { answer:song.title.toLowerCase(), hint:song.hint, artist:song.artist, attempts:0, startTime:Date.now() };
+  const s = SONGS[Math.floor(Math.random() * SONGS.length)];
+  tebakGame[jid] = { ...s, attempts: 0, start: Date.now() };
   await sock.sendMessage(jid, {
     text:
       `🎮 *TEBAK JUDUL LAGU!*\n${"─".repeat(30)}\n\n` +
-      `🎵 *Petunjuk:* ${song.hint}\n` +
-      `🎤 *Artis:*    ${song.artist}\n\n` +
-      `Ketik judul lagunya!\n` +
-      `Punya 3 kesempatan.\n\`${CONFIG.PREFIX}skip\` = lewati`,
+      `🎵 *Petunjuk:* ${s.hint}\n` +
+      `🎤 *Artis:*    ${s.artist}\n\n` +
+      `Ketik judul lagunya! (3 kesempatan)\n` +
+      `\`${PREFIX}skip\` = lewati`,
   });
 }
 
-async function cmdTebakAnswer(sock, jid, sender, text) {
-  const game = tebakNow[jid];
-  if (!game) return;
+async function handleTebakJawab(sock, jid, sender, text) {
+  const g = tebakGame[jid];
+  if (!g) return false;
 
-  game.attempts++;
-  const jawaban = text.trim().toLowerCase();
-  const correct = game.answer;
+  g.attempts++;
+  const jaw = text.trim().toLowerCase();
 
-  // Hitung skor makin cepat makin tinggi
-  const elapsedSec = Math.floor((Date.now() - game.startTime) / 1000);
-  const baseScore  = Math.max(10, 100 - elapsedSec);
-
-  if (jawaban === correct || jawaban.includes(correct) || correct.includes(jawaban)) {
+  if (jaw === g.title || jaw.includes(g.title) || g.title.includes(jaw)) {
+    const skor = Math.max(10, 100 - Math.floor((Date.now() - g.start) / 1000));
     if (!tebakSkor[jid]) tebakSkor[jid] = {};
-    tebakSkor[jid][sender] = (tebakSkor[jid][sender] || 0) + baseScore;
-    delete tebakNow[jid];
+    tebakSkor[jid][sender] = (tebakSkor[jid][sender] || 0) + skor;
+    delete tebakGame[jid];
     await sock.sendMessage(jid, {
       text:
-        `🎉 *BENAR!* +${baseScore} poin\n\n` +
-        `🎵 Jawaban: *${game.answer}*\n` +
-        `⏱ Waktu: ${elapsedSec} detik\n\n` +
+        `🎉 *BENAR!* +${skor} poin\n` +
+        `🎵 Jawaban: *${g.title}*\n` +
         `Skor kamu: *${tebakSkor[jid][sender]}*\n\n` +
-        `Ketik \`${CONFIG.PREFIX}tebak\` untuk lanjut!`,
+        `\`${PREFIX}tebak\` untuk lanjut!`,
     });
-  } else if (game.attempts >= 3) {
-    delete tebakNow[jid];
+  } else if (g.attempts >= 3) {
+    delete tebakGame[jid];
     await sock.sendMessage(jid, {
-      text:
-        `😅 Kesempatan habis!\n\n` +
-        `🎵 Jawaban: *${game.answer}*\n\n` +
-        `Ketik \`${CONFIG.PREFIX}tebak\` untuk coba lagi!`,
+      text: `😅 Habis! Jawaban: *${g.title}*\n\n\`${PREFIX}tebak\` untuk coba lagi!`,
     });
   } else {
-    const sisa = 3 - game.attempts;
     await sock.sendMessage(jid, {
-      text: `❌ Salah! Sisa ${sisa} kesempatan.\n💡 Petunjuk: ${game.hint}`,
+      text: `❌ Salah! Sisa ${3 - g.attempts} kesempatan.\n💡 ${g.hint}`,
     });
   }
+  return true;
 }
 
 // ─── GAME: Hangman ────────────────────────────────────────────
-const HANGMAN_POOL = [
+const HM_WORDS = [
   "gitar","drum","piano","melodi","lirik","konser","album","single",
   "vokal","bassist","gitaris","drummer","nada","kunci","tempo","ritme",
   "beatbox","rapper","penyanyi","musisi",
 ];
-const HM_STATES = ["😵","😰","😨","😟","😐","🙂","😁"];
+const HM_FACE = ["😵","😰","😨","😟","😐","🙂","😁"];
 
 async function cmdHangman(sock, jid) {
-  if (hangman[jid]) {
-    const g = hangman[jid];
-    const disp = g.word.split("").map(c=> g.guessed.includes(c)?c:"_").join(" ");
+  if (hmGame[jid]) {
+    const g = hmGame[jid];
+    const disp = g.word.split("").map(c => g.guessed.includes(c) ? c : "_").join(" ");
     return sock.sendMessage(jid, {
       text:
-        `🎮 Game hangman masih berjalan!\n\n` +
-        `${HM_STATES[HM_STATES.length-1-g.wrong]} Salah: ${g.wrong}/${g.maxWrong}\n` +
+        `🎮 Hangman masih jalan!\n\n` +
+        `${HM_FACE[HM_FACE.length - 1 - g.wrong]} Salah: ${g.wrong}/6\n` +
         `Kata: \`${disp}\`\n` +
-        `Huruf ditebak: ${g.guessed.join(", ")||"-"}\n\n` +
-        `Kirim 1 huruf untuk menebak. \`${CONFIG.PREFIX}hhint\` untuk petunjuk.`,
+        `Huruf: ${g.guessed.join(", ") || "-"}\n\n` +
+        `Kirim 1 huruf. \`${PREFIX}hhint\` petunjuk. \`${PREFIX}hstop\` berhenti.`,
     });
   }
-  const word = HANGMAN_POOL[Math.floor(Math.random()*HANGMAN_POOL.length)];
-  hangman[jid] = { word, guessed:[], wrong:0, maxWrong:6 };
-  const disp = word.split("").map(()=>"_").join(" ");
+  const word = HM_WORDS[Math.floor(Math.random() * HM_WORDS.length)];
+  hmGame[jid] = { word, guessed: [], wrong: 0 };
+  const disp = word.split("").map(() => "_").join(" ");
   await sock.sendMessage(jid, {
     text:
       `🎮 *HANGMAN MUSIK!*\n${"─".repeat(30)}\n\n` +
       `😁 Salah: 0/6\n` +
-      `Kata: \`${disp}\`\n` +
-      `Panjang: ${word.length} huruf\n\n` +
-      `Kirim 1 huruf untuk menebak!\n` +
-      `\`${CONFIG.PREFIX}hhint\` = petunjuk | \`${CONFIG.PREFIX}hstop\` = berhenti`,
+      `Kata: \`${disp}\` (${word.length} huruf)\n\n` +
+      `Kirim 1 huruf!\n\`${PREFIX}hhint\` = petunjuk | \`${PREFIX}hstop\` = berhenti`,
   });
 }
 
-async function cmdHangmanGuess(sock, jid, sender, letter) {
-  const g = hangman[jid];
-  if (!g) return;
+async function handleHangmanHuruf(sock, jid, sender, letter) {
+  const g = hmGame[jid];
+  if (!g) return false;
+  if (!/^[a-z]$/i.test(letter)) return false;
 
   const l = letter.toLowerCase();
-  if (!/^[a-z]$/.test(l)) return sock.sendMessage(jid, { text:"⚠️ Kirim 1 huruf saja (a-z)." });
-  if (g.guessed.includes(l)) return sock.sendMessage(jid, { text:`⚠️ Huruf *${l.toUpperCase()}* sudah ditebak.` });
+  if (g.guessed.includes(l)) {
+    await sock.sendMessage(jid, { text: `⚠️ Huruf *${l.toUpperCase()}* sudah ditebak.` });
+    return true;
+  }
 
   g.guessed.push(l);
-  const correct = g.word.includes(l);
-  if (!correct) g.wrong++;
+  if (!g.word.includes(l)) g.wrong++;
 
-  const disp  = g.word.split("").map(c=>g.guessed.includes(c)?c:"_").join(" ");
-  const state = HM_STATES[Math.max(0, HM_STATES.length-1-g.wrong)];
-  const done  = !disp.includes("_");
-  const dead  = g.wrong >= g.maxWrong;
+  const disp = g.word.split("").map(c => g.guessed.includes(c) ? c : "_").join(" ");
+  const done = !disp.includes("_");
+  const dead = g.wrong >= 6;
 
   if (done) {
-    if (!tebakSkor[jid]) tebakSkor[jid]={};
-    tebakSkor[jid][sender] = (tebakSkor[jid][sender]||0) + 50;
-    delete hangman[jid];
-    return sock.sendMessage(jid, {
-      text:`🎉 *BENAR SEMUA!* +50 poin\n\n🎵 Kata: *${g.word.toUpperCase()}*\n\nKetik \`${CONFIG.PREFIX}hangman\` lagi!`,
+    if (!tebakSkor[jid]) tebakSkor[jid] = {};
+    tebakSkor[jid][sender] = (tebakSkor[jid][sender] || 0) + 50;
+    delete hmGame[jid];
+    await sock.sendMessage(jid, {
+      text: `🎉 *BENAR SEMUA!* +50 poin\n🎵 Kata: *${g.word.toUpperCase()}*\n\n\`${PREFIX}hangman\` lagi!`,
+    });
+  } else if (dead) {
+    delete hmGame[jid];
+    await sock.sendMessage(jid, {
+      text: `💀 *GAME OVER!*\n🎵 Kata: *${g.word.toUpperCase()}*\n\n\`${PREFIX}hangman\` untuk coba lagi!`,
+    });
+  } else {
+    await sock.sendMessage(jid, {
+      text:
+        `${g.word.includes(l) ? "✅ Benar!" : "❌ Salah!"}\n\n` +
+        `${HM_FACE[HM_FACE.length - 1 - g.wrong]} Salah: ${g.wrong}/6\n` +
+        `Kata: \`${disp}\`\n` +
+        `Huruf: ${g.guessed.join(", ")}`,
     });
   }
-  if (dead) {
-    delete hangman[jid];
-    return sock.sendMessage(jid, {
-      text:`💀 *GAME OVER!*\n\n🎵 Kata yang benar: *${g.word.toUpperCase()}*\n\nKetik \`${CONFIG.PREFIX}hangman\` untuk coba lagi!`,
-    });
-  }
-
-  await sock.sendMessage(jid, {
-    text:
-      `${correct?"✅ Benar!":"❌ Salah!"}\n\n` +
-      `${state} Salah: ${g.wrong}/${g.maxWrong}\n` +
-      `Kata: \`${disp}\`\n` +
-      `Huruf: ${g.guessed.join(", ")}`,
-  });
-}
-
-async function cmdHangmanHint(sock, jid) {
-  const g = hangman[jid];
-  if (!g) return sock.sendMessage(jid, { text:`❌ Tidak ada game hangman aktif. \`${CONFIG.PREFIX}hangman\` untuk mulai.` });
-  const unguessed = g.word.split("").filter(c=>!g.guessed.includes(c));
-  if (!unguessed.length) return;
-  const hint = unguessed[Math.floor(Math.random()*unguessed.length)];
-  g.guessed.push(hint);
-  g.wrong++;
-  const disp = g.word.split("").map(c=>g.guessed.includes(c)?c:"_").join(" ");
-  await sock.sendMessage(jid, {
-    text:`💡 Petunjuk: huruf *${hint.toUpperCase()}*\n(-1 nyawa)\n\nKata: \`${disp}\``,
-  });
+  return true;
 }
 
 // ─── GAME: Tic-Tac-Toe ────────────────────────────────────────
-function renderBoard(b) {
-  const sym = x => x===0?"⬜":x===1?"❌":"⭕";
-  return (
-    `${sym(b[0])}${sym(b[1])}${sym(b[2])}\n` +
-    `${sym(b[3])}${sym(b[4])}${sym(b[5])}\n` +
-    `${sym(b[6])}${sym(b[7])}${sym(b[8])}`
-  );
+function boardStr(b) {
+  const s = i => b[i] === 0 ? "⬜" : b[i] === 1 ? "❌" : "⭕";
+  return `${s(0)}${s(1)}${s(2)}\n${s(3)}${s(4)}${s(5)}\n${s(6)}${s(7)}${s(8)}`;
 }
-function checkWinner(b, p) {
-  const wins=[[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
-  return wins.some(w=>w.every(i=>b[i]===p));
+function checkWin(b, p) {
+  return [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]]
+    .some(w => w.every(i => b[i] === p));
 }
 function aiMove(b) {
-  // Minimax sederhana: coba menang, block lawan, random
-  for(let p of [2,1]) {
-    for(let i=0;i<9;i++) {
-      if(b[i]===0){b[i]=p;if(checkWinner(b,p)){b[i]=0;return i;}b[i]=0;}
+  for (const p of [2, 1]) {
+    for (let i = 0; i < 9; i++) {
+      if (b[i] === 0) { b[i] = p; if (checkWin(b, p)) { b[i] = 0; return i; } b[i] = 0; }
     }
   }
-  const free=b.map((v,i)=>v===0?i:-1).filter(i=>i>=0);
-  if(b[4]===0) return 4;
-  return free[Math.floor(Math.random()*free.length)];
+  if (b[4] === 0) return 4;
+  const free = b.map((v, i) => v === 0 ? i : -1).filter(i => i >= 0);
+  return free[Math.floor(Math.random() * free.length)];
 }
 
-async function cmdTicTac(sock, jid, sender) {
-  duel[jid] = { board:Array(9).fill(0), player:sender, turn:1 };
+async function cmdTictac(sock, jid, sender) {
+  tttGame[jid] = { board: Array(9).fill(0), player: sender };
   await sock.sendMessage(jid, {
     text:
       `🎮 *TIC-TAC-TOE vs BOT*\n${"─".repeat(28)}\n\n` +
-      renderBoard(duel[jid].board) + "\n\n" +
-      `Kamu: ❌  |  Bot: ⭕\n\n` +
-      `Pilih posisi (1-9):\n` +
-      `1️⃣2️⃣3️⃣\n4️⃣5️⃣6️⃣\n7️⃣8️⃣9️⃣`,
+      boardStr(tttGame[jid].board) +
+      `\n\nKamu ❌ vs Bot ⭕\n\nPilih posisi (1-9):\n1️⃣2️⃣3️⃣\n4️⃣5️⃣6️⃣\n7️⃣8️⃣9️⃣`,
   });
 }
 
-async function cmdTicTacMove(sock, jid, sender, num) {
-  const g = duel[jid];
-  if (!g || g.player!==sender) return;
+async function handleTictacMove(sock, jid, sender, num) {
+  const g = tttGame[jid];
+  if (!g || g.player !== sender) return false;
+  if (isNaN(num) || num < 1 || num > 9) return false;
+
   const idx = num - 1;
-  if (g.board[idx]!==0) return sock.sendMessage(jid, { text:"⚠️ Posisi sudah terisi! Pilih lain." });
+  if (g.board[idx] !== 0) {
+    await sock.sendMessage(jid, { text: "⚠️ Posisi sudah terisi! Pilih lain." });
+    return true;
+  }
 
   g.board[idx] = 1;
-  if (checkWinner(g.board,1)) {
-    delete duel[jid];
-    if (!tebakSkor[jid]) tebakSkor[jid]={};
-    tebakSkor[jid][sender]=(tebakSkor[jid][sender]||0)+30;
-    return sock.sendMessage(jid, {
-      text:`${renderBoard(g.board)}\n\n🎉 *Kamu MENANG!* +30 poin`,
-    });
+  if (checkWin(g.board, 1)) {
+    delete tttGame[jid];
+    if (!tebakSkor[jid]) tebakSkor[jid] = {};
+    tebakSkor[jid][sender] = (tebakSkor[jid][sender] || 0) + 30;
+    await sock.sendMessage(jid, { text: `${boardStr(g.board)}\n\n🎉 *Kamu MENANG!* +30 poin` });
+    return true;
   }
   if (!g.board.includes(0)) {
-    delete duel[jid];
-    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤝 *SERI!*` });
+    delete tttGame[jid];
+    await sock.sendMessage(jid, { text: `${boardStr(g.board)}\n\n🤝 *SERI!*` });
+    return true;
   }
 
-  // Giliran bot
   const ai = aiMove(g.board);
   g.board[ai] = 2;
-  if (checkWinner(g.board,2)) {
-    delete duel[jid];
-    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤖 *Bot MENANG!* Coba lagi \`${CONFIG.PREFIX}tictac\`` });
+  if (checkWin(g.board, 2)) {
+    delete tttGame[jid];
+    await sock.sendMessage(jid, { text: `${boardStr(g.board)}\n\n🤖 *Bot MENANG!*\n\`${PREFIX}tictac\` untuk ulang.` });
+    return true;
   }
   if (!g.board.includes(0)) {
-    delete duel[jid];
-    return sock.sendMessage(jid, { text:`${renderBoard(g.board)}\n\n🤝 *SERI!*` });
+    delete tttGame[jid];
+    await sock.sendMessage(jid, { text: `${boardStr(g.board)}\n\n🤝 *SERI!*` });
+    return true;
   }
 
   await sock.sendMessage(jid, {
-    text:`${renderBoard(g.board)}\n\nGiliran kamu! Pilih posisi (1-9):`,
+    text: `${boardStr(g.board)}\n\nGiliran kamu! Pilih (1-9):`,
   });
+  return true;
 }
 
-// ─── Command: Skor ────────────────────────────────────────────
+// ─── CMD: skor ────────────────────────────────────────────────
 async function cmdSkor(sock, jid, sender) {
   const s = tebakSkor[jid];
   if (!s || !Object.keys(s).length)
-    return sock.sendMessage(jid, { text:`🏆 Belum ada skor. Main \`${CONFIG.PREFIX}tebak\`, \`${CONFIG.PREFIX}hangman\`, atau \`${CONFIG.PREFIX}tictac\`!` });
+    return sock.sendMessage(jid, { text: `🏆 Belum ada skor. Main \`${PREFIX}tebak\`, \`${PREFIX}hangman\`, atau \`${PREFIX}tictac\`!` });
 
-  const sorted = Object.entries(s).sort((a,b)=>b[1]-a[1]);
+  const sorted = Object.entries(s).sort((a, b) => b[1] - a[1]);
   let msg = `🏆 *PAPAN SKOR*\n${"─".repeat(28)}\n\n`;
-  sorted.forEach(([num,pts],i)=>{
-    const medal = i===0?"🥇":i===1?"🥈":i===2?"🥉":"  ";
-    const tag   = num===sender?" ← kamu":"";
-    msg+=`${medal} ${num.split("@")[0]} — *${pts} poin*${tag}\n`;
+  sorted.forEach(([num, pts], i) => {
+    const medal = ["🥇", "🥈", "🥉"][i] || "  ";
+    msg += `${medal} ${num.split("@")[0]} — *${pts} poin*${num === sender ? " ← kamu" : ""}\n`;
   });
-  await sock.sendMessage(jid, { text:msg });
+  await sock.sendMessage(jid, { text: msg });
 }
 
-// ─── Router Utama ─────────────────────────────────────────────
-async function handleMessage(sock, msg) {
+// ─── Message Handler ──────────────────────────────────────────
+async function handleMsg(sock, msg) {
   if (!msg.message) return;
 
   const jid    = msg.key.remoteJid;
@@ -542,125 +536,168 @@ async function handleMessage(sock, msg) {
 
   if (!body) return;
 
-  const P = CONFIG.PREFIX;
-
-  // ── Handler game tanpa prefix (jawaban tebak/hangman/tictac) ──
-  if (tebakNow[jid] && !body.startsWith(P)) {
-    return cmdTebakAnswer(sock, jid, sender, body);
+  // ── Cek game aktif (jawaban tanpa prefix) ─────────────────
+  if (!body.startsWith(PREFIX)) {
+    if (tebakGame[jid]) {
+      await handleTebakJawab(sock, jid, sender, body);
+      return;
+    }
+    if (hmGame[jid] && /^[a-zA-Z]$/.test(body)) {
+      await handleHangmanHuruf(sock, jid, sender, body);
+      return;
+    }
+    if (tttGame[jid] && /^[1-9]$/.test(body)) {
+      await handleTictacMove(sock, jid, sender, parseInt(body));
+      return;
+    }
+    return;
   }
-  if (hangman[jid] && !body.startsWith(P) && /^[a-zA-Z]$/.test(body)) {
-    return cmdHangmanGuess(sock, jid, sender, body);
-  }
-  if (duel[jid] && !body.startsWith(P) && /^[1-9]$/.test(body)) {
-    return cmdTicTacMove(sock, jid, sender, parseInt(body));
-  }
 
-  if (!body.startsWith(P)) return;
-
-  const [rawCmd, ...args] = body.slice(P.length).trim().split(/\s+/);
+  // ── Parse command ─────────────────────────────────────────
+  const [rawCmd, ...args] = body.slice(PREFIX.length).trim().split(/\s+/);
   const cmd   = rawCmd.toLowerCase();
   const query = args.join(" ");
 
-  console.log(`[CMD] ${sender} → ${P}${cmd} ${query}`);
+  console.log(`[CMD] ${sender.split("@")[0]} → ${PREFIX}${cmd} ${query}`);
 
-  switch(cmd) {
-    case "menu": case "help":
-      await sock.sendMessage(jid, { text: MENU }); break;
+  switch (cmd) {
+    case "menu":
+    case "help":
+      await sock.sendMessage(jid, { text: MENU });
+      break;
 
-    case "play": case "dl": case "download":
-      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}play <judul>\`` });
-      await cmdPlay(sock, jid, query, false); break;
+    case "ping": {
+      const t = Date.now();
+      await sock.sendMessage(jid, { text: "🏓 Pong!" });
+      await sock.sendMessage(jid, { text: `✅ *Bot aktif!*\n⚡ Latensi: *${Date.now() - t}ms*` });
+      break;
+    }
 
-    case "mp4": case "video":
-      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}mp4 <judul>\`` });
-      await cmdPlay(sock, jid, query, true); break;
+    case "play":
+    case "dl":
+      if (!query) return sock.sendMessage(jid, { text: `⚠️ Contoh: \`${PREFIX}play Shape of You\`` });
+      await cmdPlay(sock, jid, query, false);
+      break;
 
-    case "cari": case "search":
-      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}cari <judul>\`` });
-      await cmdSearch(sock, jid, query); break;
+    case "mp4":
+    case "video":
+      if (!query) return sock.sendMessage(jid, { text: `⚠️ Contoh: \`${PREFIX}mp4 Shape of You\`` });
+      await cmdPlay(sock, jid, query, true);
+      break;
+
+    case "cari":
+    case "search":
+      if (!query) return sock.sendMessage(jid, { text: `⚠️ Contoh: \`${PREFIX}cari Tulus\`` });
+      await cmdCari(sock, jid, query);
+      break;
 
     case "info":
-      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}info <judul>\`` });
-      await cmdInfo(sock, jid, query); break;
+      if (!query) return sock.sendMessage(jid, { text: `⚠️ Contoh: \`${PREFIX}info Tulus\`` });
+      await cmdInfo(sock, jid, query);
+      break;
 
-    case "lirik": case "lyrics":
-      if (!query) return sock.sendMessage(jid, { text:`⚠️ Format: \`${P}lirik <judul>\`` });
-      await cmdLyrics(sock, jid, query); break;
+    case "lirik":
+    case "lyrics":
+      if (!query) return sock.sendMessage(jid, { text: `⚠️ Contoh: \`${PREFIX}lirik Yellow Coldplay\`` });
+      await cmdLirik(sock, jid, query);
+      break;
 
-    case "history": case "riwayat":
-      await cmdHistory(sock, jid); break;
+    case "history":
+    case "riwayat":
+      await cmdHistory(sock, jid);
+      break;
 
-    case "ping":
-      const t = Date.now();
-      await sock.sendMessage(jid, { text:"🏓 Pong!" });
-      await sock.sendMessage(jid, { text:`✅ *Bot aktif!*\n⚡ Latensi: *${Date.now()-t}ms*` }); break;
-
-    // ── Games ──────────────────────────────────────────────────
     case "tebak":
-      await cmdTebak(sock, jid); break;
+      await cmdTebak(sock, jid);
+      break;
 
     case "skip":
-      if (tebakNow[jid]) {
-        const ans = tebakNow[jid].answer;
-        delete tebakNow[jid];
-        await sock.sendMessage(jid, { text:`⏭️ Di-skip!\n🎵 Jawaban: *${ans}*` });
-      } break;
+      if (tebakGame[jid]) {
+        const ans = tebakGame[jid].title;
+        delete tebakGame[jid];
+        await sock.sendMessage(jid, { text: `⏭️ Di-skip! Jawaban: *${ans}*` });
+      } else {
+        await sock.sendMessage(jid, { text: "❌ Tidak ada soal aktif." });
+      }
+      break;
 
     case "hangman":
-      await cmdHangman(sock, jid); break;
+      await cmdHangman(sock, jid);
+      break;
 
     case "hhint":
-      await cmdHangmanHint(sock, jid); break;
+      if (hmGame[jid]) {
+        const g = hmGame[jid];
+        const unguessed = g.word.split("").filter(c => !g.guessed.includes(c));
+        if (unguessed.length) {
+          const hint = unguessed[Math.floor(Math.random() * unguessed.length)];
+          g.guessed.push(hint);
+          g.wrong++;
+          const disp = g.word.split("").map(c => g.guessed.includes(c) ? c : "_").join(" ");
+          await sock.sendMessage(jid, { text: `💡 Huruf: *${hint.toUpperCase()}* (-1 nyawa)\nKata: \`${disp}\`` });
+        }
+      } else {
+        await sock.sendMessage(jid, { text: `❌ Tidak ada game hangman aktif.` });
+      }
+      break;
 
     case "hstop":
-      if (hangman[jid]) { delete hangman[jid]; await sock.sendMessage(jid,{text:"🛑 Game hangman dihentikan."}); } break;
+      if (hmGame[jid]) {
+        delete hmGame[jid];
+        await sock.sendMessage(jid, { text: "🛑 Hangman dihentikan." });
+      }
+      break;
 
-    case "tictac": case "ttt":
-      await cmdTicTac(sock, jid, sender); break;
+    case "tictac":
+    case "ttt":
+      await cmdTictac(sock, jid, sender);
+      break;
 
-    case "skor": case "score":
-      await cmdSkor(sock, jid, sender); break;
+    case "skor":
+    case "score":
+      await cmdSkor(sock, jid, sender);
+      break;
 
     default:
-      await sock.sendMessage(jid, { text:`❓ Perintah *${P}${cmd}* tidak dikenal.\nKetik \`${P}menu\` untuk daftar perintah.` });
+      await sock.sendMessage(jid, {
+        text: `❓ Perintah *${PREFIX}${cmd}* tidak dikenal.\nKetik \`${PREFIX}menu\` untuk daftar.`,
+      });
   }
 }
 
 // ─── Koneksi WhatsApp ─────────────────────────────────────────
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(CONFIG.SESSION_DIR);
+  const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version }          = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
     version,
-    logger:            pino({ level:"silent" }),
-    printQRInTerminal: false,
-    auth:              state,
-    browser:           Browsers.macOS("Safari"),
-    msgRetryCounterCache,
-    syncFullHistory:   false,
-    connectTimeoutMs:  60000,
-    defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 10000,
+    logger:               pino({ level: "silent" }),
+    printQRInTerminal:    false,
+    auth:                 state,
+    browser:              Browsers.macOS("Safari"),
+    msgRetryCounterCache: retryCache,
+    syncFullHistory:      false,
+    connectTimeoutMs:     60000,
+    keepAliveIntervalMs:  25000,
   });
 
-  // ── Pairing Code (hanya jika belum terdaftar) ────────────────
+  // Pairing code (hanya saat pertama kali)
   if (!sock.authState.creds.registered) {
-    const number = CONFIG.WA_NUMBER;
-    if (!number) {
-      console.error("❌ Set env WA_NUMBER=6281234567890 untuk pairing!");
+    if (!WA_NUMBER) {
+      console.error("❌ Set ENV: WA_NUMBER=62812xxxx");
       process.exit(1);
     }
     try {
       await new Promise(r => setTimeout(r, 3000));
-      const code = await sock.requestPairingCode(number);
-      const fmt8 = code.match(/.{1,4}/g).join("-");
+      const code = await sock.requestPairingCode(WA_NUMBER);
+      const fmt  = code.match(/.{1,4}/g).join("-");
       console.log(`\n╔══════════════════════════════╗`);
-      console.log(`║  🔑  PAIRING CODE:  ${fmt8}  ║`);
+      console.log(`║  🔑  PAIRING CODE:  ${fmt}  ║`);
       console.log(`╚══════════════════════════════╝`);
-      console.log(`\n➡️  Buka WhatsApp > Perangkat Tertaut > Tautkan dengan nomor telepon`);
-      console.log(`    Masukkan kode: ${fmt8}\n`);
-    } catch(e) {
+      console.log(`\n➡️  WA > Perangkat Tertaut > Tautkan dengan nomor telepon`);
+      console.log(`   Masukkan: ${fmt}\n`);
+    } catch (e) {
       console.error("❌ Gagal pairing:", e.message);
     }
   }
@@ -668,34 +705,28 @@ async function startBot() {
   sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
-      console.log("🔴 Koneksi putus, kode:", code);
+      console.log(`🔴 Putus (${code}), reconnect dalam 5 detik...`);
       if (code === DisconnectReason.loggedOut) {
-        console.log("🔄 Logout manual, hapus session...");
-        fs.removeSync(CONFIG.SESSION_DIR);
+        console.log("🗑️  Session dihapus (logout).");
+        fs.removeSync(SESSION_DIR);
       }
       setTimeout(startBot, 5000);
     } else if (connection === "open") {
-      console.log(`🟢 ${CONFIG.BOT_NAME} terhubung! Prefix: ${CONFIG.PREFIX}`);
+      console.log(`🟢 ${BOT_NAME} terhubung! Prefix: ${PREFIX}`);
     }
   });
 
-  let sessionSaved = false;
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    if (!sessionSaved) {
-      sessionSaved = true;
-      console.log("✅ Session tersimpan di folder sessions/");
-    }
-  });
+  sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
     for (const msg of messages) {
       if (msg.key.fromMe) continue;
-      await handleMessage(sock, msg).catch(e => console.error("[MSG ERR]", e.message));
+      await handleMsg(sock, msg).catch(e => console.error("[ERR]", e.message));
     }
   });
 }
 
-console.log(`\n🎵 Starting ${CONFIG.BOT_NAME}...\n`);
+// ─── Start ────────────────────────────────────────────────────
+console.log(`\n🎵 Starting ${BOT_NAME}...\n`);
 startBot().catch(console.error);
