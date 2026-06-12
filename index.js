@@ -721,7 +721,10 @@ async function startBot() {
   sock.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
     for (const msg of messages) {
-      if (msg.key.fromMe) continue;
+      // Skip pesan dari bot sendiri KECUALI di chat "Saya (Anda)"
+      const jid = msg.key.remoteJid;
+      const isSelfChat = jid && jid.includes(WA_NUMBER.replace(/[^0-9]/g, ""));
+      if (msg.key.fromMe && !isSelfChat) continue;
       await handleMsg(sock, msg).catch(e => console.error("[ERR]", e.message));
     }
   });
