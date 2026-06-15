@@ -593,6 +593,8 @@ async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version }          = await fetchLatestBaileysVersion();
 
+  console.log("[INIT] Menggunakan Baileys v" + version.join(".") + ", Session dir: " + SESSION_DIR);
+
   const sock = makeWASocket({
     version:              version,
     logger:               pino({ level: "silent" }),
@@ -608,41 +610,66 @@ async function startBot() {
   // Pairing code hanya saat pertama
   if (!sock.authState.creds.registered) {
     if (!WA_NUMBER) {
-      console.error("Set ENV: WA_NUMBER=62812xxxx");
+      console.error("[ERROR] Set ENV: WA_NUMBER=62812xxxx (atau di .env)");
       process.exit(1);
     }
+
+    console.log("[PAIRING] Nomor: " + WA_NUMBER);
+    console.log("[PAIRING] Menunggu socket siap...");
+
+    // Tunggu socket siap dulu (koneksi WebSocket terbuka)
+    await new Promise(function(resolve) {
+      sock.ev.once("connection.update", function(update) {
+        if (update.connection === "connecting" || update.connection === "open") {
+          console.log("[PAIRING] Socket siap (connection: " + update.connection + ")");
+          resolve();
+        }
+      });
+      setTimeout(resolve, 5000);
+    });
 
     // Fungsi minta kode baru
     async function requestCode() {
       try {
+        console.log("[PAIRING] Memerinta kode pairing...");
         const code = await sock.requestPairingCode(WA_NUMBER);
+        if (!code) {
+          console.warn("[PAIRING] Kode kosong, retry...");
+          return;
+        }
         const fmt  = code.match(/.{1,4}/g).join("-");
-        console.log("\n*** PAIRING CODE: " + fmt + " ***");
-        console.log("Buka WA > Perangkat Tertaut > Tautkan dengan nomor telepon");
-        console.log("Masukkan: " + fmt);
-        console.log("(Kode baru dalam 30 detik jika belum dipakai)\n");
+        console.log("\n========================================");
+        console.log("*** PAIRING CODE: " + fmt + " ***");
+        console.log("========================================");
+        console.log("Langkah:");
+        console.log("1. Buka WhatsApp di HP");
+        console.log("2. Pilih: Perangkat Tertaut > Tautkan Perangkat");
+        console.log("3. Masukkan kode: " + fmt);
+        console.log("(Kode berlaku 30 detik)");
+        console.log("========================================\n");
       } catch (e) {
-        console.error("Gagal minta kode:", e.message);
+        console.error("[PAIRING] Error: " + e.message);
       }
     }
 
-    // Tunggu socket siap dulu
-    await new Promise(function(r) { setTimeout(r, 3000); });
     await requestCode();
 
     // Refresh setiap 30 detik selama belum terhubung
-    const pairInterval = setInterval(async function() {
+    let pairInterval = null;
+    pairInterval = setInterval(async function() {
       if (sock.authState.creds.registered) {
+        console.log("[PAIRING] ✓ Berhasil terhubung!");
         clearInterval(pairInterval);
         return;
       }
+      console.log("[PAIRING] Menunggu pairing... (retry dalam 30 detik)");
       await requestCode();
     }, 30000);
 
     // Stop interval saat koneksi berhasil
     sock.ev.once("connection.update", function(update) {
-      if (update.connection === "open") {
-        clearInterval(pairInterval);
+      if (update.connection === "open" && sock.authState.creds.registered) {
+        if (pairInterval) clearInterval(pairInterval);
       }
     });
   }
@@ -654,37 +681,66 @@ async function startBot() {
     if (connection === "close") {
       const code = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output
         ? lastDisconnect.error.output.statusCode : 0;
-      console.log("Putus (kode " + code + "), reconnect dalam 5 detik...");
+      console.log("[ERROR] Koneksi putus (kode " + code + "), reconnect dalam 5 detik...");
+      console.log("[DEBUG] lastDisconnect error:", lastDisconnect && lastDisconnect.error);
+      
       if (code === DisconnectReason.loggedOut) {
-        console.log("Logout - hapus session.");
+        console.log("[ERROR] Logout - hapus session di: " + SESSION_DIR);
         fs.removeSync(SESSION_DIR);
       }
       setTimeout(startBot, 5000);
     } else if (connection === "open") {
-      console.log(BOT_NAME + " terhubung! Prefix: " + PREFIX);
+      console.log("[SUCCESS] Bot terhubung! Prefix: " + PREFIX);
+      console.log("[BOT] Siap menerima pesan...");
+    } else if (connection === "connecting") {
+      console.log("[INFO] Bot sedang menghubungkan...");
     }
   });
 
-  sock.ev.on("creds.update", saveCreds);
+  sock.ev.on("creds.update", function() {
+    console.log("[AUTH] Simpan kredensial...");
+    saveCreds();
+  });
 
   sock.ev.on("messages.upsert", async function(upsert) {
     if (upsert.type !== "notify") return;
-    console.log("[UPSERT] " + upsert.messages.length + " pesan, type=" + upsert.type);
+    console.log("[UPSERT] " + upsert.messages.length + " pesan baru");
+    
     for (const msg of upsert.messages) {
-      // Lewati pesan dari bot sendiri kecuali chat ke diri sendiri (untuk testing)
-      const remoteJid  = msg.key.remoteJid || "";
-      const isSelfChat = WA_NUMBER && remoteJid.startsWith(WA_NUMBER);
-      console.log("[MSG-RAW] remoteJid=" + remoteJid.split("@")[0] + " fromMe=" + msg.key.fromMe + " isSelfChat=" + isSelfChat);
-      if (msg.key.fromMe && !isSelfChat) continue;
-
       try {
+        const remoteJid  = msg.key.remoteJid || "";
+        const isFromMe   = msg.key.fromMe;
+        const isSelfChat = WA_NUMBER && remoteJid.startsWith(WA_NUMBER.replace(/[^0-9]/g, ""));
+        
+        console.log("[MSG-RAW] remoteJid=" + remoteJid.split("@")[0] + " fromMe=" + isFromMe + " isSelfChat=" + isSelfChat);
+        
+        // PERBAIKAN: Hanya skip jika pesan dari diri sendiri DAN bukan self-chat
+        if (isFromMe && !isSelfChat) {
+          console.log("[SKIP] Pesan dari bot sendiri (bukan self-chat), skip");
+          continue;
+        }
+
         await handleMsg(sock, msg);
       } catch (e) {
         console.error("[ERR]", e.message);
+        console.error("[STACK]", e.stack);
       }
     }
   });
+
+  // Error handler global
+  sock.ev.on("error", function(err) {
+    console.error("[SOCKET-ERROR]", err.message || err);
+  });
+
+  // Connection errors
+  process.on("unhandledRejection", function(reason) {
+    console.error("[UNHANDLED]", reason);
+  });
 }
 
-console.log("Starting " + BOT_NAME + "...");
-startBot().catch(console.error);
+console.log("[START] Memulai " + BOT_NAME + "...");
+startBot().catch(function(err) {
+  console.error("[FATAL]", err.message);
+  process.exit(1);
+});
