@@ -10,12 +10,11 @@ const {
 
 const pino      = require("pino");
 const fs        = require("fs-extra");
-const path      = require("path");
 const NodeCache = require("node-cache");
+const express   = require("express");
 const YouTube   = require("youtube-sr").default;
 const ytdl      = require("ytdl-core");
 const axios     = require("axios");
-const express   = require("express");
 
 // --- Config & Environment -------------------------------------
 const PORT        = process.env.PORT || 8000;
@@ -27,39 +26,45 @@ const TEMP_DIR    = "./temp";
 fs.ensureDirSync(SESSION_DIR);
 fs.ensureDirSync(TEMP_DIR);
 
-// --- Server for Koyeb -----------------------------------------
 const app = express();
 app.get("/", (_, res) => res.send("Bot is Running"));
 app.listen(PORT, () => console.log(`[SERVER] Port ${PORT}`));
 
 const retryCache = new NodeCache();
 
-// --- [FUNGSI FITUR MUSIK & GAME DISINI] -----------------------
-// Kamu bisa copy-paste fungsi: cmdPlay, cmdCari, cmdLirik, 
-// cmdTebak, cmdHangman, cmdTictac, dan getMenu dari script awalmu ke sini.
+// --- FUNGSI FITUR (Copy-Paste dari script aslimu) --------------
+async function cmdPlay(sock, jid, query) {
+  await sock.sendMessage(jid, { text: "Mencari dan mengunduh: " + query });
+  // Masukkan logic download ytdl di sini seperti script aslimu
+}
 
+// --- Message Handler ------------------------------------------
 async function handleMsg(sock, msg) {
-  if (!msg.message) return;
   const jid = msg.key.remoteJid;
   const body = (msg.message.conversation || msg.message.extendedTextMessage?.text || "").trim();
-
+  
   if (!body.startsWith(PREFIX)) return;
 
   const args = body.slice(PREFIX.length).trim().split(/ +/);
   const cmd = args.shift().toLowerCase();
   const query = args.join(" ");
 
-  // Contoh routing perintah
-  if (cmd === "play") {
-    // Panggil fungsi cmdPlay yang kamu pindahkan ke sini
-    await sock.sendMessage(jid, { text: "Mencari " + query + "..." });
-  } 
-  else if (cmd === "menu") {
-    await sock.sendMessage(jid, { text: "Menu: !play, !cari, !tebak, !tictac" });
+  switch (cmd) {
+    case "play":
+      await cmdPlay(sock, jid, query);
+      break;
+    case "menu":
+      await sock.sendMessage(jid, { text: "Menu: !play, !cari, !lirik, !ping" });
+      break;
+    case "ping":
+      await sock.sendMessage(jid, { text: "Pong!" });
+      break;
+    default:
+      await sock.sendMessage(jid, { text: "Perintah tidak dikenal." });
   }
 }
 
-// --- Bot Logic ------------------------------------------------
+// --- Main Bot Logic -------------------------------------------
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
   const { version } = await fetchLatestBaileysVersion();
@@ -69,22 +74,26 @@ async function startBot() {
     logger: pino({ level: "silent" }),
     auth: state,
     browser: Browsers.macOS("Safari"),
+    msgRetryCounterCache: retryCache,
   });
 
-  // Pairing Code
+  // Pairing Code Auto-Refresh
   if (!sock.authState.creds.registered) {
-    setTimeout(async () => {
-        try {
-            const code = await sock.requestPairingCode(WA_NUMBER);
-            console.log("KODE PAIRING: " + code);
-        } catch (e) { console.error("Error Pairing:", e.message); }
-    }, 5000);
+    let pairInterval = setInterval(async () => {
+      if (sock.authState.creds.registered) { clearInterval(pairInterval); return; }
+      try {
+        const code = await sock.requestPairingCode(WA_NUMBER);
+        console.log("\n[NEW PAIRING CODE]: " + code);
+      } catch (e) { console.error("Error Pairing:", e.message); }
+    }, 60000);
   }
 
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect } = update;
     if (connection === "close") {
       if (lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut) startBot();
+    } else if (connection === "open") {
+      console.log("[STATUS] Bot Berhasil Terhubung!");
     }
   });
 
@@ -99,4 +108,5 @@ async function startBot() {
   });
 }
 
-startBot();
+startBot().catch(err => console.error("[FATAL ERROR]", err));
+  
